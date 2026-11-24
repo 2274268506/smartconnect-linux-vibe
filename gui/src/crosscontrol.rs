@@ -11,6 +11,8 @@
 //! part of that edge it touches in the shared `crosscontrol.json`, which `smartconnect-crosscontrol`
 //! reads at startup (also when the daemon starts it for the phone's tile).
 
+use crate::i18n::tr;
+
 use std::cell::{Cell, RefCell};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -243,9 +245,9 @@ impl CrossControlPage {
     /// Returns the page, the modes (title, cards, status) and the phone-position group, for the
     /// Display tab to place around the display settings.
     pub fn build(toasts: &adw::ToastOverlay, display: Rc<DisplayPage>) -> (Rc<Self>, gtk::Widget, gtk::Widget) {
-        let title = gtk::Label::builder().label("Cross Control").xalign(0.0).css_classes(["title-2"]).build();
+        let title = gtk::Label::builder().label(tr("Cross Control")).xalign(0.0).css_classes(["title-2"]).build();
         let intro = gtk::Label::builder()
-            .label("Use your phone next to this PC: share this PC's mouse and keyboard with it, or use it as a second display.")
+            .label(tr("Use your phone next to this PC: share this PC's mouse and keyboard with it, or use it as a second display."))
             .xalign(0.0)
             .wrap(true)
             .css_classes(["dim-label"])
@@ -254,9 +256,9 @@ impl CrossControlPage {
         let modes = gtk::Box::builder().spacing(12).homogeneous(true).build();
         let mut cards = Vec::new();
         for (mode, icon, name, sub) in [
-            (Mode::Shared, "input-mouse-symbolic", "Shared mouse and keyboard", "Move the pointer past the screen edge onto the phone"),
-            (Mode::Duplicate, "video-joined-displays-symbolic", "Duplicate display", "The phone shows this PC's screen"),
-            (Mode::Extend, "video-display-symbolic", "Extend display", "The phone becomes a second screen"),
+            (Mode::Shared, "input-mouse-symbolic", tr("Shared mouse and keyboard"), tr("Move the pointer past the screen edge onto the phone")),
+            (Mode::Duplicate, "video-joined-displays-symbolic", tr("Duplicate display"), tr("The phone shows this PC's screen")),
+            (Mode::Extend, "video-display-symbolic", tr("Extend display"), tr("The phone becomes a second screen")),
         ] {
             let (button, check) = mode_card(icon, name, sub);
             modes.append(&button);
@@ -269,8 +271,8 @@ impl CrossControlPage {
         canvas_card.append(&canvas);
         let position = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim-label", "caption"]).build();
         let arrange = adw::PreferencesGroup::builder()
-            .title("Phone position")
-            .description("Drag the phone to the side of the screen where it sits. Extend display puts the phone's screen there, and shared mouse and keyboard crosses over along the highlighted part of that edge.")
+            .title(tr("Phone position"))
+            .description(tr("Drag the phone to the side of the screen where it sits. Extend display puts the phone's screen there, and shared mouse and keyboard crosses over along the highlighted part of that edge."))
             .build();
         let arrange_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
         arrange_box.append(&canvas_card);
@@ -278,7 +280,7 @@ impl CrossControlPage {
         arrange.add(&arrange_box);
 
         let shortcuts = gtk::Label::builder()
-            .label("Push the pointer back out of the phone, or press Ctrl+Alt+Esc, to return to this PC.")
+            .label(tr("Push the pointer back out of the phone, or press Ctrl+Alt+Esc, to return to this PC."))
             .xalign(0.0)
             .wrap(true)
             .css_classes(["dim-label", "caption"])
@@ -418,7 +420,7 @@ impl CrossControlPage {
             return;
         }
         if !self.connected.get() {
-            self.toasts.add_toast(adw::Toast::new("Connect the phone first"));
+            self.toasts.add_toast(adw::Toast::new(tr("Connect the phone first")));
             self.after_change();
             return;
         }
@@ -497,11 +499,11 @@ impl CrossControlPage {
         }
         self.syncing.set(false);
         let text = match (running, self.connected.get()) {
-            (Some(Mode::Shared), _) => "Shared mouse and keyboard is on: push the pointer into the highlighted edge.",
-            (Some(Mode::Duplicate), _) => "The phone is showing this PC's screen.",
-            (Some(Mode::Extend), _) => "The phone is a second screen for this PC.",
-            (None, true) => "Pick a mode to start. Pick it again to stop.",
-            (None, false) => "Connect the phone to use Cross Control.",
+            (Some(Mode::Shared), _) => tr("Shared mouse and keyboard is on: push the pointer into the highlighted edge."),
+            (Some(Mode::Duplicate), _) => tr("The phone is showing this PC's screen."),
+            (Some(Mode::Extend), _) => tr("The phone is a second screen for this PC."),
+            (None, true) => tr("Pick a mode to start. Pick it again to stop."),
+            (None, false) => tr("Connect the phone to use Cross Control."),
         };
         self.status.set_label(text);
         let landscape = self.display.phone_landscape().unwrap_or(false);
@@ -530,7 +532,7 @@ impl CrossControlPage {
         self.layout.set(layout);
         let half = self.geometry().span_len(layout.edge) / 2.0;
         if let Err(e) = save_layout(layout.edge, layout.center - half, layout.center + half) {
-            self.toasts.add_toast(adw::Toast::new(&format!("Could not save the phone position: {e}")));
+            self.toasts.add_toast(adw::Toast::new(&crate::tr_format!("Could not save the phone position: {e}", "无法保存手机位置：{e}")));
         }
         self.update_position_label();
         self.canvas.queue_draw();
@@ -551,12 +553,12 @@ impl CrossControlPage {
     fn update_position_label(&self) {
         let l = self.layout.get();
         let side = match l.edge {
-            Edge::Left => "left of",
-            Edge::Right => "right of",
-            Edge::Top => "above",
-            Edge::Bottom => "below",
+            Edge::Left => tr("left of"),
+            Edge::Right => tr("right of"),
+            Edge::Top => tr("above"),
+            Edge::Bottom => tr("below"),
         };
-        self.position.set_label(&format!("The phone is {side} this PC's screen."));
+        self.position.set_label(&crate::tr_format!("The phone is {side} this PC's screen.", "手机位于电脑屏幕的{side}。"));
     }
 
     fn draw(&self, area: &gtk::DrawingArea, cr: &cairo::Context, w: f64, h: f64) {
@@ -575,7 +577,7 @@ impl CrossControlPage {
         cr.set_line_width(2.0);
         let _ = cr.stroke();
         set(&fg, 0.7);
-        label(cr, "This PC", x + sw / 2.0, y + sh / 2.0, 14.0);
+        label(cr, tr("This PC"), x + sw / 2.0, y + sh / 2.0, 14.0);
 
         // Where the pointer crosses over: the part of the edge the phone touches.
         if self.drag.get().is_none() {
@@ -609,7 +611,7 @@ impl CrossControlPage {
         rounded(cr, px + pw * 0.35, py + 5.0, pw * 0.3, 3.0, 1.5);
         let _ = cr.fill();
         set(&fg, 0.7);
-        label(cr, "Phone", px + pw / 2.0, py + ph / 2.0, 11.0);
+        label(cr, tr("Phone"), px + pw / 2.0, py + ph / 2.0, 11.0);
     }
 }
 

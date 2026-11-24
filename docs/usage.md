@@ -26,7 +26,7 @@ Status keys used on this page, the same as in the [README](../README.md#feature-
 | Front-end | What it can do |
 |---|---|
 | The Smart Connect app on the phone | Pair (scan the QR), Connect, Disconnect, and the tiles on the PC's device page (App streaming, Cross Control, PC lock, Hotspot, Webcam). Starting the PC's screen on the phone. |
-| GTK app (`smartconnect-gui`, **Smart Connect** in the app launcher) | A header **device menu** (left of the title) shows the connected device and holds *Pair new phone…*, *Preferences* (the *Start at login* switch) and *Connect/Disconnect*. A view switcher has five pages. *Phone*: a phone card (wallpaper, name, an inline battery / Wi-Fi / mobile / Bluetooth row, and **Mirror screen**), an unread-messages shortcut, and a Cross Control switch with an edge picker. While the phone is away the card keeps showing the last connected phone (dimmed last-known values, "last connected …") with a **Connect** button; with no phone paired it offers **Pair a phone**. If the Smart Connect service isn't running, the window says so, shows the last phone, and has a **Start service** button. *Apps*: a search box, Recent chips and an icon grid to stream single phone apps. *Display*: the phone as a second monitor or a copy of your screen (Layout / Experimental / Advanced groups). *Files*: mount the phone's storage, quick-folder shortcuts, and storage settings. *Notifications*: notifications grouped under *Today* with reply boxes, a ⋯ menu (*Open on phone*, *Dismiss*, *Mute app*) and per-app mute. Pairing opens in a dialog. In a narrow window the page switcher moves to the bottom. It also puts a [tray icon](#tray-icon-and-background-running) in the system tray and starts the daemon when you open it. |
+| GTK app (`smartconnect-gui`, **Smart Connect** in the app launcher) | A header **device menu** (left of the title) shows the connected device and holds *Pair new phone…*, *Preferences* (the *Start at login* switch) and *Connect/Disconnect*. A view switcher has six pages. *Phone*: a phone card (wallpaper, name, an inline battery / Wi-Fi / mobile / Bluetooth row, and **Mirror screen**), a shortcut counting visible notifications, a separate unread SMS/MMS status, and a Cross Control switch with an edge picker. While the phone is away the card keeps showing the last connected phone (dimmed last-known values, "last connected …") with a **Connect** button; with no phone paired it offers **Pair a phone**. If the Smart Connect service isn't running, the window says so, shows the last phone, and has a **Start service** button. *Apps*: a search box, Recent chips and an icon grid to stream single phone apps. *Desktop mode*: the phone’s mobile desktop in a PC window with resolution controls. *Display*: the phone as a second monitor or a copy of your screen (Layout / Experimental / Advanced groups). *Files*: mount the phone's storage, quick-folder shortcuts, and storage settings. *Notifications*: notifications grouped under *Today* with reply boxes, a ⋯ menu (*Open on phone*, *Dismiss*, *Mute app*) and per-app mute. Pairing opens in a dialog. In a narrow window the page switcher moves to the bottom. It also puts a [tray icon](#tray-icon-and-background-running) in the system tray and starts the daemon when you open it. |
 | Noctalia plugin | Bar pill with battery level. Panel with the phone card (wallpaper, battery, signal, unread count), Connect/Disconnect, the pairing QR, Mirror screen, Cross Control with an edge selector, Phone as display with an Extend/Duplicate switch, a Phone files tile (mount, open, unmount), and recent notifications with reply boxes and mute buttons. Settings for the display, the phone files and the muted apps. An [IPC target](#noctalia-ipc) for keybindings. |
 | CLI | `smartconnectd` with `status`, `subscribe`, `connect`, `disconnect` or `pair`, plus the helper programs. See the [reference](#command-line-reference). |
 | Your own scripts | The [control socket API](control-socket-api.md). |
@@ -157,6 +157,45 @@ Wi-Fi could look connected for many minutes.
 **Disconnect is respected.** After a Disconnect from either side, the daemon stops reconnecting on
 its own. The next Connect from either side ends that state.
 
+### By cable
+
+Plug the phone in with a USB cable and pick **Smart Connect** in the phone's USB popup (or start
+the cable connection in the Smart Connect app). The phone turns on USB tethering, finds the PC over
+mDNS on the cable and connects over it; nothing needs to be started on the PC. The phone must be
+paired already. Verified on a motorola edge 70 max.
+
+The phone gives the cable link a new random MAC address each time it is plugged in, so without
+help your PC's address on the cable would change too. Cable mode doesn't mind (the phone asks for a
+fresh invite), but the phone's Connect button and a QR scanned while plugged in remember the old
+address. So the daemon keeps it fixed: when it starts, it creates the NetworkManager profile
+`smartconnect-phone-usb` (owned by your user; it matches the `rndis_host` driver, gives the link one
+fixed MAC and never takes the default route), which NetworkManager then uses whenever the phone is
+plugged in. A phone that is already plugged in when the daemon starts is moved onto it. It logs
+`cable: created the NetworkManager profile` and `cable: switching the phone's link`.
+Without NetworkManager (`nmcli`) nothing happens. A profile of that name that you made yourself is
+left alone. Pass `--no-cable-profile` to turn this off, and remove the profile with
+`nmcli connection delete smartconnect-phone-usb`.
+
+The daemon logs `cable: the phone's USB tethering link is up` when it sees the link, and lists that
+address in its invites.
+
+
+## Interface language
+
+New configurations default to **English**. Existing explicit choices are retained.
+In the GTK app, open the device menu → **Preferences → Language**. Choose **Follow system**,
+**English**, **简体中文**, **Français** or **Español**, then press **Restart to apply**. The choice is saved immediately in
+`$XDG_CONFIG_HOME/smartconnect-linux/gui.json` (normally `~/.config/smartconnect-linux/gui.json`)
+as `"language":"system"`, `"en"`, `"zh-CN"`, `"fr"` or `"es"`. Reopening Preferences keeps the restart button
+available while a different language is pending.
+
+Follow system checks the first nonempty `LC_ALL`, `LC_MESSAGES` or `LANG`: Chinese locales use
+Simplified Chinese, French locales use French, Spanish locales use Spanish, and other locales use English. The switch controls the GTK application's own
+pages, menus and tray actions. Phone app names, notification contents, file paths, technical
+logs and the Noctalia plugin are not translated by this setting. System-provided dialogs may
+continue to use the desktop's language. Restarting follows normal GUI shutdown behavior for
+GUI-owned helper sessions and file mounts; it does not request a daemon stop.
+
 ## Tray icon and background running
 
 Status: 🟡 (implemented; needs a system-tray host, which the Noctalia/Quickshell bar provides).
@@ -187,7 +226,7 @@ simply absent).
 Status: 🟡
 
 The phone pushes its battery level and charging state, Wi-Fi and mobile signal, Bluetooth state,
-unread message count and wallpaper. The GTK app's *Phone* page and the Noctalia bar and panel show
+unread SMS/MMS count and wallpaper. The GTK app's *Phone* page and the Noctalia bar and panel show
 them, and `smartconnectd status` prints them as JSON (field reference in the
 [control socket API](control-socket-api.md#the-status-object)). They are kept in memory only. The
 wallpaper is saved to `$XDG_RUNTIME_DIR/smartconnectd/phone-wallpaper.jpg` (or `.png`).
@@ -208,6 +247,11 @@ This needs `WAYLAND_DISPLAY` in the daemon's environment, and either a composito
 data-control protocol or (GNOME) Xwayland with `DISPLAY` set (see [Troubleshooting](troubleshooting.md#clipboard-doesnt-sync)).
 
 ## Notifications
+
+The Phone page's notification shortcut counts the entries actually shown in this tab, after
+local Dismiss/Clear all. The phone's unread SMS/MMS count is independent: it is labeled
+“view on phone” and does not link to Notifications. SMS history has no GTK reader yet, and
+opening or clearing app notifications does not mark phone messages as read.
 
 Status: ✅ mirrored to the desktop, quick reply, multi-line messages ·
 🟡 action buttons, "Open on phone", dedupe/coalescing, themed icons, per-app mute
@@ -261,16 +305,22 @@ which apps it forwards.
 
 ## SMS
 
-Status: 🟡 backend only, needs enabling on the phone, not verified
+The Phone page's unread SMS/MMS count follows status pushed by the phone, without periodic
+queries. Reading on the phone may leave the PC count unchanged until the phone reports a new
+status. App notifications are independent and continue to arrive through their own push events.
 
-There is no UI yet. Use the control socket commands `sms_threads`, `sms_thread`, `sms_send`,
+Status: 🟡 GTK Messages page and control API; phone permission is required.
+
+Open **Messages** to sync recent conversations, select a thread to read/reply, and use **Refresh** for a new phone sync. Failed sends retain their drafts; accepted requests mean handed to the phone, not confirmed delivery. Contacts/message text are rendered literally. Disconnect clears visible private content. Data stays in RAM and is not written to local history. The UI sends one sync for an explicit action, then briefly reads the local daemon cache; there is no periodic phone polling. MMS attachments are not displayed. Real sending has not been tested on the current phone.
+
+You can also use the control socket commands `sms_threads`, `sms_thread`, `sms_send`,
 `sms_mark_read` and `sms_state` (see the [API reference](control-socket-api.md#sms-commands)).
 
 ```sh
 S=$XDG_RUNTIME_DIR/smartconnectd.sock
 echo '{"cmd":"sms_threads"}' | socat - UNIX-CONNECT:$S      # starts a sync, returns what is cached
 sleep 5
-echo '{"cmd":"sms_threads"}' | socat - UNIX-CONNECT:$S      # conversations, newest first
+echo '{"cmd":"sms_threads","refresh":false}' | socat - UNIX-CONNECT:$S  # cached conversations, no phone query
 echo '{"cmd":"sms_send","number":"+15555550123","text":"On my way"}' | socat - UNIX-CONNECT:$S
 ```
 
@@ -320,6 +370,36 @@ interfaces aren't tried; set `SMARTCONNECT_ICE_ADDRESSES` to override that (see
 [environment variables](#environment-variables)). Only H.264 is decoded (VA-API when available,
 otherwise libav). See [Troubleshooting](troubleshooting.md#mirroring-and-app-streaming).
 
+## Mirroring logs
+
+Open **device menu → Mirroring logs**, or **Desktop mode → View mirroring logs**. The viewer
+works while disconnected and reads the latest 256 KiB from local storage once per second.
+Search matches text without case sensitivity; **Warnings and errors** limits severity.
+**Pause updates** freezes only this window, while recording continues. **Follow latest** keeps
+the newest lines visible. **Copy logs** copies the visible matches. **Export logs** saves matching
+entries from all retained files, including history outside the visible tail.
+
+The mirror host/standalone viewer records startup, connection/session state, decoder and renderer
+selection, warnings/errors and five-second media/input counters. Counters are read from local
+memory; this adds no phone polling. Timestamps use UTC. Logs start automatically with the stream
+host and remain available after it exits.
+
+Default location: `~/.local/state/smartconnect-linux/mirror.log`, or
+`$XDG_STATE_HOME/smartconnect-linux/mirror.log`. Each file is at most 2 MiB; the current file plus
+`.1` and `.2` retain at most 6 MiB. Storage uses a private directory and private files. Known
+transport credentials, identifiers and network addresses are redacted; no media or typed key
+values are recorded. See [Security](security.md#mirroring-diagnostics) before sharing exports.
+
+```sh
+smartconnect-mirror --logs                     # recent diagnostic tail, even with no host
+smartconnect-mirror --log-path                 # current path
+tail -F "$(smartconnect-mirror --log-path)"      # follow across rotation
+```
+
+This dedicated diagnostic log is separate from the older helper stdout/stderr captures and
+from the optional raw protocol session logs. After upgrading, restart the stream host to start
+the new diagnostic writer.
+
 ## App streaming
 
 Status: ✅ apps started from the PC · 🟡 apps started from the phone's tile or the GTK app's *Apps*
@@ -357,13 +437,157 @@ Each phone app opens in its own Linux window, titled after the app (for example
 Input in app windows uses the same code as the mirror window, but hasn't been verified separately.
 Closing a window ends that app's stream. Window icons aren't set yet.
 
+**Rotation** (🟡): when the phone turns the app or the virtual phone to landscape, the window turns
+with it: the picture is turned upright and the window changes shape (long and short sides swap).
+The phone doesn't send a rotated picture: it keeps sending the portrait frame and tells the PC
+about the turn, so the viewer does the turning. Mouse clicks and typing follow the turned picture.
+If a phone turns the picture the wrong way round, set `SMARTCONNECT_MIRROR_ROTATION=invert` in the
+daemon's environment; `=off` leaves the picture as the phone sends it. Verified on a motorola
+edge 70 max with the virtual phone and a landscape video app. Turning your own phone doesn't turn
+a virtual phone: it is a separate screen that only turns when the app on it does. The window
+follows what the phone reports, so if an app leaves the display landscape the window stays
+landscape too: YouTube's full-screen player, left with Back, does this until you press Home.
+
 **Window resize** (🟡, opt-in): with `SMARTCONNECT_MIRROR_RESIZE=1` in the daemon's environment (or
 a host started as `smartconnect-mirror --host --resize`), resizing an app window asks the phone to
 resize that app's virtual display to match, once the new size has held for a moment. It is off by
 default because tiling compositors resize every new window right away, so each app would ask the
 phone for a new size as soon as it opens. The whole-screen mirror is never resized.
 
+### Custom app resolution
+
+On **Apps**, use the settings button beside search (or **App streaming settings** on an empty
+list). Enable **Custom app resolution**, choose a portrait/landscape preset or enter width and
+height, then set **Display density (DPI)** and save. Higher DPI makes app controls/text larger.
+The default remains automatic sizing. These defaults apply to subsequently opened app windows;
+close an existing window before reopening it with changed settings. Saving does not close apps.
+
+Dimensions must be even, each 320–3840 pixels, with the shorter side no larger than 2160;
+DPI is 120–640. The phone may limit the size or an app may impose orientation/letterboxing.
+Running rows show the phone's reported dimensions and DPI, with the requested dimensions also
+shown if different. Custom geometry remains fixed when the PC window is resized; the video is
+scaled locally instead of letting opt-in automatic window resize replace the custom request.
+Desktop mode and whole-screen mirroring keep their separate settings.
+
+```sh
+smartconnect-mirror --app com.example.notes --size 720x1280 --dpi 240
+smartconnect-mirror --app com.example.notes com.example.notes.Main --size 1920x1080 --dpi 320
+```
+
+Without `--size`, CLI launches retain automatic behavior; `--dpi` requires `--size` and defaults
+to 320 when omitted with a size. The installed stream host must support `appResolution`.
+Settings are stored in `gui.json` under `apps.streaming`, independently of app recents.
+
+### App streaming with scrcpy
+
+Open **Apps → Streaming settings → Display method → scrcpy (ADB)**, configure its ADB device/port if needed, save, then launch an app. Existing windows keep their backend until closed. App and desktop ADB/quality settings are saved separately. The same [scrcpy/ADB installation and phone authorization](#desktop-mode-with-scrcpy) are required.
+
+Custom resolution/DPI and fixed aspect ratio still configure the phone's app display. Height/width fit computes native source pixels from the monitor; the scrcpy window receives matching size/aspect hints and borderless geometry on X11/XWayland. Manual fit remains a resizable window. Bitrate and FPS are passed to scrcpy's encoder/capture flags; actual rates depend on the phone.
+
+The host keeps the Smart Connect app session alive and captures its existing display, without a duplicate built-in window. Closing the viewer or stopping the app releases both captures. Startup failures appear on the Apps page and in **Mirroring logs**, independently of desktop errors. Each scrcpy stream retains the Smart Connect capture plus an ADB capture; simultaneous streams can exhaust phone encoder resources. Stop unused streams if a new viewer cannot start.
+
 ## Screen share and Mobile desktop tiles
+
+### App aspect ratio, native fit and stream quality
+
+In **Apps → settings**, enable **Fixed aspect ratio** and choose a preset or enter the ratio's
+width and height. Manual dimensions keep the other side linked. **Fill screen height (1:1)**
+and **Fill screen width (1:1)** calculate the source resolution from the selected monitor's
+physical pixels, including fractional desktop scaling. For a 2880×1920 monitor, 9:16 fitted
+to height requests 1080×1920. The derived side rounds to the nearest even pixel. If either
+side exceeds the app encoder bounds, Save is disabled; choose another ratio/axis instead.
+The other side can extend beyond the screen when the ratio differs from the monitor.
+
+Fixed-ratio windows use X11/XWayland aspect hints. Native fit also removes window decorations
+and requests a client area matching the video pixels. It needs the default XWayland renderer;
+compositor scaling, window-management rules and phone encoder limitations can affect the result.
+The phone's accepted size remains visible in the running-app row. Reopen the app after saving.
+Fit dimensions are recalculated on launch for the monitor containing the app button.
+
+**Stream quality** has independent Automatic switches for bitrate and frame rate. Turn either
+off to set 300–50000 kbit/s or 1–60 FPS. Defaults preserve phone negotiation. Bitrate is a
+negotiated ceiling, not a constant bitrate or a guarantee that the phone will accept a higher
+value. FPS is a maximum **display** rate: SDP also requests that limit, and a decoded-frame
+limiter enforces it locally if the phone ignores it. This does not force the phone to encode
+at that rate or reduce network traffic for frames discarded locally. Low caps trade fluidity
+for fewer presentations; they do not cure transport stalls. Only already decoded frames are
+skipped, preserving H.264 references. Settings apply to newly opened app windows.
+
+### Desktop mode page
+
+The GTK app's **Desktop mode** tab shows the phone's mobile desktop in a PC window. Connect the
+phone, leave **Use computer resolution** selected (the default), or choose 1280×720, 1920×1080,
+2560×1440, 3840×2160 or **Custom**, then press **Start desktop mode**. Custom sizes must use even pixels, width 640–3840,
+height 360–2160, with width at least height. The phone's encoder may use a smaller size; **Actual resolution** shows its stream report.
+
+Automatic resolution uses the monitor containing the GTK window, falling back to the first
+monitor before the window is mapped. It accounts for monitor scaling, uses landscape dimensions
+and fits oversized monitors within 3840×2160 with even pixels. The resolved size is shown in the
+resolution row; moving to another monitor takes effect on the next start or Apply. An older saved
+manual size stays manual until you select Use computer resolution.
+
+**Borderless mode** removes the desktop window's title bar and frame. It can be toggled while
+the desktop runs, without restarting its stream. Use Stop desktop mode to close a window without
+a title bar. This uses the default glimagesink/XWayland renderer; unsupported renderers report
+an error instead of silently ignoring the setting. It is a window decoration setting, not a
+request to enter fullscreen.
+
+Settings are saved as `"desktop":{"width":1920,"height":1080,"followComputer":true,"borderless":false}`
+in `gui.json`, independently of the Display page. Change a running desktop's size with **Apply and restart desktop**; this closes
+only the desktop session before requesting a new one. **Stop desktop mode** closes its window.
+1280×720, 1920×1080 and the PC-matched 2880×1920 size were checked on a phone;
+other sizes depend on the phone and are not yet device-verified. Close whole-screen mirroring or virtual-phone mode before starting a desktop. Closing the GTK
+window leaves a desktop stream running; reopen the page to manage it again.
+
+```sh
+smartconnect-mirror --desktop --size 1280x720 --borderless
+```
+
+The GUI checks that the stream host supports resolution settings. If it asks for a host update,
+stop streams and restart `smartconnect-mirror --host` using the matching new build. Older hosts
+accept the original desktop command but silently ignore width and height.
+
+Desktop mode has its own **Stream quality** controls with the same automatic/manual bitrate
+and display-FPS limits. They save separately from app streaming and from PC-to-phone Display.
+Use **Apply and restart desktop** to apply changes to an active desktop session.
+
+### Desktop mode with scrcpy
+
+Select **Desktop mode → Display method → scrcpy (ADB)** and press Start. The host creates the
+complete Motorola desktop, discovers its current display ID and starts scrcpy automatically.
+Only the scrcpy window appears: the owner WebRTC stream is drained without a local decoder or
+window. Closing scrcpy, pressing Stop, or restarting desktop settings also releases that owner
+session. The host owns scrcpy independently of the GTK window, so closing the main GUI to the
+tray keeps the desktop alive. Built-in mirroring remains the default for existing preferences.
+
+Install `scrcpy` (3.0+) and `adb`, enable USB or wireless ADB on the phone and authorize this
+computer. Automatic device selection prefers the paired phone's network address, then a single
+authorized ADB device. If none is connected, it tries the paired phone's IP and **Wireless ADB
+port** (default 5555). For Android wireless debugging, enter its actual connection port; pairing
+must already be completed. Multiple devices require an explicit **ADB device**, such as a USB
+serial or `192.168.1.20:5555`. This feature does not pair ADB or bypass phone authorization.
+
+Desktop bitrate/FPS settings are forwarded to scrcpy as encoder/capture controls; automatic
+keeps scrcpy defaults. Resolution and app/text scaling still configure the Motorola desktop.
+With **Follow computer resolution**, scrcpy starts fullscreen on the monitor and uses its entire client area; a custom resolution opens a regular window. Different source/screen aspect ratios can still produce bars. Borderless settings apply on restart. **Software decoding for scrcpy** can help with hardware
+crashes/black screens; it requires a scrcpy build exposing `--hwdec`. On X11-capable sessions the
+host selects scrcpy's SDL X11 backend, which was verified with VA-API here.
+
+Progress/errors appear on the Desktop page, and scrcpy output is included in **Mirroring logs**.
+A missing binary, unauthorized/offline/ambiguous ADB device, startup timeout or process failure
+cleans up the owner session. No unrelated scrcpy process is stopped. Binary lookup is
+`SMARTCONNECT_SCRCPY_BIN` / `SMARTCONNECT_ADB_BIN`, sibling executable, then PATH; set overrides
+on the daemon/host. The phone still keeps its Smart Connect encoder plus scrcpy's encoder;
+this integration does not remove the second phone-side capture or promise lower latency.
+
+Desktop mode also has **App and text scaling**: follow the computer (default), or choose
+100–300%. This changes the phone desktop's virtual-display density while keeping the selected
+video resolution. Use **Apply and restart desktop** after changing it. It is separate from
+phone-launcher display/text preferences and from standalone windows opened on the Apps page.
+The actual-resolution row includes density when the phone reports it. Apps that draw using
+fixed pixel sizes may not fully honor Android display density.
+
+### Phone tiles
 
 Status: 🟡 shown by default; Mobile desktop started from the phone, Screen share less tested
 
@@ -899,9 +1123,11 @@ smartconnect-mirror [--host [--resize] | --desktop | --app PKG [CMP] | --list-ap
 | *(no arguments)* | Mirror the whole phone screen. Handed to the stream host if one runs. |
 | `--host` | Long-running stream host. It opens a window for every stream the phone starts here (notification Open, the App streaming, Screen share and Mobile desktop tiles), runs notification action buttons without a window, serves `$XDG_RUNTIME_DIR/smartconnect-mirror.sock` (see [API](control-socket-api.md#the-stream-host-socket)), and refuses to start twice. The daemon keeps one running. |
 | `--host --resize` | The same, and ask the phone to resize app displays to their windows (experimental; also `SMARTCONNECT_MIRROR_RESIZE=1`). |
-| `--desktop` | Ask the phone for Ready For's Mobile desktop in a window (experimental). Handed to the host if one runs. |
+| `--desktop [--size WxH] [--borderless]` | Ask the phone for Ready For's Mobile desktop in a window, optionally with a landscape resolution. Handed to the host if one runs. The phone may limit the size. |
 | `--app PKG [CMP]` | Stream one app, optionally a specific activity component. Goes through the host if one runs. |
 | `--list-apps [--json]` | Ask the phone for its launchable apps. Prints `pkg`, `userId`, `name`, `cmp` tab-separated, or one JSON array with `--json` (each entry also has `iconName`, the app icon's file name in the icon cache, and `work` for work-profile apps). Caches the list in `~/.cache/smartconnect/apps.json` and falls back to the cache if the phone doesn't answer within 15 s. |
+| `--logs` | Show recent sanitized diagnostic logs, including while stopped. |
+| `--log-path` | Print the persistent diagnostic path. |
 | `--sessions` | Print the host's open sessions as JSON. |
 | `--close SID` | Close one host session. |
 | `-h`, `--help` | Usage. |
@@ -910,11 +1136,18 @@ smartconnect-mirror [--host [--resize] | --desktop | --app PKG [CMP] | --list-ap
 |---|---|
 | `SMARTCONNECT_BACKGROUND_ACTIONS=0` | Notification action buttons open a window, like Open does, instead of running in the background. |
 | `SMARTCONNECT_MIRROR_RESIZE=1` | Same as `--resize` for a host. |
-| `SMARTCONNECT_ICE_ADDRESSES` | Local addresses offered to the phone for the video: comma-separated IPs and IPv4 CIDRs (`192.168.1.20,10.0.0.0/8`), or `all`. Default: the daemon's `pcAddress`, else private IPv4 addresses on non-virtual interfaces. |
+| `SMARTCONNECT_ICE_ADDRESSES` | Local addresses offered to the phone for the video: comma-separated IPs and IPv4 CIDRs (`192.168.1.20,10.0.0.0/8`), or `all`. Default: the daemon's `pcAddress`, else private IPv4 addresses on non-virtual interfaces. Explicit address/list selections and `pcAddress` also restrict libnice gathering to those addresses; `all` leaves gathering unrestricted. |
+| `MIRROR_LATENCY_MS` | Receive jitter buffer, 20–1000 ms; default 80 ms. Increase toward 200 ms if Wi-Fi jitter causes stutter. Set on the host/daemon, not just the one-shot client. |
 | `MIRROR_DECODER` | GStreamer H.264 decoder element. Default `vah264dec` if available, else `avdec_h264`. |
 | `MIRROR_SINK` | Video sink. Default `glimagesink` if available, else `autovideosink`. |
 | `MIRROR_GL_WAYLAND=1` | Keep GStreamer's native Wayland GL window instead of X11/XWayland (no keyboard input). |
 | `GST_GL_WINDOW` | Respected if you set it. Otherwise the viewer sets `x11` when `DISPLAY` exists. |
+
+Set these mirror variables on the daemon or on a manually started `smartconnect-mirror --host`.
+A one-shot viewer hands requests to an existing host, so its environment cannot change that
+host's decoder or renderer. Visible streams log the actual playback choices. The receive path
+requests keyframes after packet loss and drops stale decoded frames when rendering is slow;
+neither this nor software decoding is a verified cure for all tearing or stuttering.
 
 The host the daemon starts inherits the daemon's environment, so set these for the service (see
 [Installation](installation.md#the-systemd-user-service)).
@@ -1106,6 +1339,7 @@ Read by `smartconnectd`. The helpers it starts inherit its environment, so their
 | `SMARTCONNECT_CROSS_EDGE` | Edge used when the phone's tile starts Cross Control, overriding the saved phone position (`crosscontrol.json`). |
 | `SMARTCONNECT_BACKGROUND_ACTIONS=0` | *helper:* notification action buttons open a window. |
 | `SMARTCONNECT_MIRROR_RESIZE=1` | *helper:* resize app displays to their windows. |
+| `SMARTCONNECT_MIRROR_ROTATION` | *helper:* `off` doesn't turn the picture when the phone rotates a display; `invert` turns it the other way. |
 | `SMARTCONNECT_ICE_ADDRESSES` | *helper:* addresses offered for video (mirror, app streaming, phone display). |
 | `SMARTCONNECT_OSK` | *helper:* on-screen keyboard for the phone display's keyboard button. |
 | `SMARTCONNECT_FILES_TRACE=1` | `smartconnect-files serve`: hex-dump the NFS traffic (debugging). |
@@ -1120,6 +1354,7 @@ Read by `smartconnectd`. The helpers it starts inherit its environment, so their
 | `~/.config/smartconnect-linux/gui.json` | GTK app preferences. |
 | `$XDG_RUNTIME_DIR/smartconnectd.sock` | Daemon control socket. |
 | `$XDG_RUNTIME_DIR/smartconnect-mirror.sock` | Stream host socket. |
+| `$XDG_STATE_HOME/smartconnect-linux/` (default `~/.local/state/smartconnect-linux/`) | Private mirroring diagnostics: `mirror.log`, `.1`, `.2` and `mirror.lock`; bounded retention, readable in the GUI or with `--logs`. |
 | `$XDG_RUNTIME_DIR/smartconnectd/` | Notification icons, phone wallpaper, reply window, logs of the helpers the daemon started. |
 | `$XDG_RUNTIME_DIR/smartconnect-display.log` | Output of the phone display session started by the GTK app or the plugin. |
 | `$XDG_RUNTIME_DIR/smartconnect-files.log` | Output of the `smartconnect-files mount` the GTK app started. |
@@ -1129,3 +1364,51 @@ Read by `smartconnectd`. The helpers it starts inherit its environment, so their
 | `~/.cache/smartconnect/` | Phone app list (`apps.json`) and the stream host log when the GTK app started it. |
 | `~/.cache/smartconnect-linux/app-icons/` | Phone app icons: `<iconName>` downloaded by the daemon (or `smartconnect-fex`) on each app list, and `<pkg>.png` saved by the stream host. Safe to delete; the next connection downloads them again. |
 | `~/.local/state/smartconnect-linux/` | GTK app: the last connected phone (`last-device.json`, `last-wallpaper.*`). |
+
+## Cancel a pending projection
+
+During desktop startup, **Cancel** remains available while waiting for the phone or preparing ADB. Apps immediately show a **Preparing connection…** row with **Cancel**; a scrcpy session that is still starting also has a Cancel action. The Phone page's whole-screen mirror button becomes **Cancel startup** while waiting for the phone. Established windows retain their usual Stop/Close actions.
+
+Cancelling removes the queued request, closes an already-created source and its owned viewer/helper, and rejects late phone offers for up to 30 seconds. An explicit new start enables retry immediately. Other app streams are preserved. Desktop startup timeout performs the same cleanup.
+
+On supported Android builds, scrcpy uses a small bundled ADB helper to keep its own virtual capture display powered on. This addresses folded phones whose inner screen is off while their Smart Connect app display is still rendering. It does not unfold the phone, wake the physical inner display, unlock it, or suppress phone authorization. Android builds lacking the per-display API keep normal scrcpy behavior; check **Mirroring logs** for helper availability.
+
+## Wake/unlock before app or desktop projection
+
+In **Apps → App streaming settings → Display method**, or **Desktop mode → Display method**, enable **Wake and unlock with ADB before starting**. The two choices save independently and default to off. This option works with both built-in mirroring and scrcpy. Enter an authorized **ADB device** or leave it empty to use automatic paired-phone selection; configure the wireless ADB connection port if needed.
+
+After Start, the host first sends ADB wake and keyguard-dismiss commands and checks the lock state, then requests the Smart Connect stream. The preparation remains cancellable. A password/PIN/pattern or biometric lock still requires authentication on the phone; no credential is requested, stored or injected. If verification fails or the lock remains protected, unlock on the phone and retry. App/desktop settings and the phone's Smart Connect confirmation requirements otherwise remain unchanged.
+
+Chinese/Unicode window captions now use UTF-8 in both X11 title properties, including fixed-aspect scrcpy app windows on KDE. Restart an existing projection window to apply the title fix.
+
+## Mouse control while a phone is folded
+
+In app streaming settings or Desktop mode, **Fold-compatible mouse** is enabled by default for scrcpy. With Android 15+ and scrcpy 4+, the host selects `--mouse=uhid`, allowing scrcpy to associate its mouse directly with the original Smart Connect app/desktop display. This remains usable when the folded phone's mirror display is marked noninteractive. Video power recovery remains active separately.
+
+UHID uses a relative, captured mouse. Press **Left Alt**, **Left Super** or **Right Super** to release/toggle capture; click the viewer to resume control. Turn this setting off and reopen the projection to return to SDK absolute mouse mode. App and desktop choices save separately. Existing projection windows keep their input mode until reopened.
+
+**Mouse speed (%)** adjusts the compatibility mouse from 25% to 400%; 100% is normal. App and desktop preferences save independently. The control is disabled when the compatibility mouse is off. Close and reopen the stream to apply it. Sensitivity is scoped to that scrcpy process, not the Linux desktop or Android global pointer settings.
+
+**Use phone input method** defaults to on. Android 15+ with scrcpy 4+ uses a source-associated UHID physical keyboard, independently of the mouse switch. Focus a phone text field, select Chinese in the phone IME, then type and choose candidates with the computer keyboard. Press Super+K to open physical keyboard settings and enable the on-screen keyboard if needed. Configure the phone IME's physical-keyboard language/shortcuts there; the host does not change layouts or the default IME. This uses the phone IME, not the computer IME.
+
+Turn this option off to restore SDK keyboard injection. Older Android/scrcpy versions or an unknown SDK level retain SDK mouse/keyboard modes; phone-IME support and folded operation on those combinations are not guaranteed. The phone must also permit UHID devices. See [scrcpy keyboard documentation](https://github.com/Genymobile/scrcpy/blob/v5.0.1/doc/keyboard.md).
+
+## Computer input method in scrcpy
+
+In **Apps → App streaming settings → Display method**, or **Desktop mode → Display method**, enable **Use computer input method**, then save/reopen the projection. The choices save independently and default to off. With this option enabled, the phone-input-method switch is disabled; turning computer mode off restores the saved phone choice. Built-in rendering is unchanged.
+
+Focus an editable field in the phone app, activate the computer's Chinese input method, type and select a candidate normally. The confirmed Unicode text is committed to that display through Smart Connect. Enter, Backspace, arrows and shortcuts retain scrcpy's SDK keyboard handling. Mouse compatibility and its speed control remain independent. Text is not copied through the desktop clipboard or saved to logs.
+
+This mode requires scrcpy 5+ with SDL3 and a Smart Connect build containing the SDL3 adapter. The system scrcpy executable is not modified. If unavailable, update scrcpy and rebuild with SDL3 development headers; the GUI reports an unsupported host instead of silently falling back. Normal Android input-field and Smart Connect authorization requirements still apply.
+
+## Phone audio with scrcpy
+
+**Play phone audio** is on by default in app streaming and Desktop mode Display method settings. Close and reopen the projection to apply changes. App/desktop switches save independently. Audio is phone output played on the PC, not microphone input. scrcpy's output source captures the whole phone output and can include other apps; it normally stops that output playing on the phone. Avoid enabling audio in multiple simultaneous projections if sound is duplicated or interrupted; leave it on in one viewer.
+
+Android 11+ is required. On Android 11, unlock before starting; older Android versions automatically continue video without audio. scrcpy may also continue video-only if audio capture fails. Check the mirroring log and the PC audio mixer for the scrcpy playback stream, its volume, mute state and selected output. The integration keeps scrcpy's default codec/buffering and does not use `--require-audio`, so unsupported audio does not prevent video. See [scrcpy audio](https://github.com/Genymobile/scrcpy/blob/v5.0.1/doc/audio.md).
+
+### Independent PC audio volume
+
+Under **Play phone audio**, enable **Independent of phone volume** and reopen the projection. It selects scrcpy's Android 13+ `playback` capture path so the PC can control playback loudness separately from the phone's output volume. App and desktop choices save independently; the option defaults off to preserve the existing output capture. It does not raise, lock or restore phone volume and does not add `--audio-dup`.
+
+Use the PC mixer to adjust the scrcpy playback stream. Some apps prohibit playback capture; if that app is silent, turn independent mode off and reopen to restore output capture. The startup check rejects enabled independent capture on Android below 13 or unknown SDK levels instead of silently changing the requested mode. The user verified ordinary media remains audible on the computer with phone media volume at zero on the current foldable. Other apps/devices still need verification; the capture-path choice alone is not proof for every app/device.

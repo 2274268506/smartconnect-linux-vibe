@@ -70,7 +70,7 @@ The daemon also uses these system services:
 |---|---|
 | Desktop notifications | `org.freedesktop.Notifications` on the session bus (zbus): `Notify`, `CloseNotification`, and the `ActionInvoked`/`NotificationClosed` signals. |
 | Clipboard | `wl-paste --type text --watch …` (child process) and `wl-copy`. |
-| mDNS | `avahi-publish -s … _readyformdns._tcp` and `avahi-browse -r -p -k _readyformdns._tcp` (child processes). |
+| mDNS | `avahi-publish -s … _readyformdns._tcp` and `… _readyfor._tcp` (cable mode), and `avahi-browse -r -p -k _readyformdns._tcp` (child processes). |
 | Bluetooth LE | BlueZ over D-Bus (`bluer`). It acts as a GATT central for the Connect wake, and as an optional peripheral without `--no-ble`. |
 | PC lock | Noctalia's `qs ipc … lockScreen lock`, `loginctl lock-session <graphical session>` or `--lock-command`, then polling `loginctl show-session <id> -p LockedHint`; a desktop notification when nothing locked. |
 | Hotspot | `nmcli dev wifi connect …` / `nmcli connection delete …`. |
@@ -85,7 +85,7 @@ starts these tasks:
 | TLS listener | `server.rs` | Accepts TCP on `--port`, does the TLS handshake (15 s limit) and the WebSocket upgrade. It routes `/readyfor/mdns` to discovery and every other `/readyfor/…` path to a session. |
 | Invite loop | `server.rs` | Keeps a valid pairing token. It renders a fresh QR (terminal + SVG) whenever the token expires. |
 | Control socket | `control.rs` | Serves `smartconnectd.sock`, one task per client. Also starts the SMS collector (`sms.rs`). |
-| mDNS advertiser and watcher | `discovery.rs` | Publishes `_readyformdns._tcp`. It remembers paired phones' adverts and dials them back when allowed. |
+| mDNS advertiser and watcher | `discovery.rs` | Publishes `_readyformdns._tcp`, and `_readyfor._tcp` for the phone's cable mode (answered on `/readyfor/rdp` in `server.rs`). It remembers paired phones' adverts and dials them back when allowed. |
 | Clipboard watcher | `clipboard.rs` | Follows the Wayland clipboard. Only runs when `WAYLAND_DISPLAY` is set. |
 | PC lock, Hotspot | `pc_lock.rs`, `hotspot.rs` | React to their services' messages from the phone. |
 | Helpers | `helpers.rs` | Supervise the stream host, and start Cross Control, the phone display or the webcam helper when the phone asks. |
@@ -386,6 +386,16 @@ time. Every process shares one `instanceId` through
 `$XDG_RUNTIME_DIR/smartconnect-mirror.instance`, because the phone drops all sessions when the id
 changes. See [mirroring](protocol/mirroring.md) and [app streaming](protocol/app-streaming.md).
 
+The depayloader outputs complete access units, requests a keyframe after packet loss and waits
+for it before forwarding dependent frames. A two-frame leaky queue **after decoding** drops stale
+pictures if the renderer stalls; compressed frames are never deliberately dropped by that queue.
+This bounds the render queue, not the whole WebRTC or decoder pipeline. Each visible session
+logs its selected decoder, sink and GL window backend. The default GL sink negotiates decoder-native
+formats and handles color conversion itself, rather than forcing a CPU videoconvert stage.
+Presentation keeps the newest decoded frames without waiting on the video clock; the receive jitter buffer defaults
+to 80 ms and can be overridden. GL/driver teardown runs off the host main loop so one window
+cannot stall other control requests while releasing resources.
+
 - **ICE candidates.** The helper offers the phone only UDP candidates on one address: the daemon's
   `pcAddress`, the local address of the phone's control connection, which the phone has already
   shown it can reach. Without it (an older daemon), it falls back to private IPv4 addresses on
@@ -475,7 +485,7 @@ keeps the phone's 30 s watchdog happy. See [webcam](protocol/webcam.md) and `.no
 | Phone files mount | the mount folder (default `~/Phone`), FUSE | `smartconnect-files mount` |
 | Phone files log | `$XDG_RUNTIME_DIR/smartconnect-files.log` (mounts started by the GTK app) | GTK app |
 | File Station identity | `$XDG_DATA_HOME/smartconnect-linux/files-identity/` (`cert.der`, `key.der`; 0700/0600) | `smartconnect-files` |
-| mDNS advert | `_readyformdns._tcp` via avahi | daemon |
+| mDNS advert | `_readyformdns._tcp` and `_readyfor._tcp` via avahi | daemon |
 | Control socket | `$XDG_RUNTIME_DIR/smartconnectd.sock` | daemon |
 | Stream host socket | `$XDG_RUNTIME_DIR/smartconnect-mirror.sock` | `smartconnect-mirror --host` |
 | Shared stream instance id | `$XDG_RUNTIME_DIR/smartconnect-mirror.instance` | mirror processes |
@@ -516,3 +526,64 @@ Permissions and contents are covered in [Security](security.md#data-on-disk).
 - **The GTK app uses blocking sockets on worker threads.** That keeps it free of tokio. Results
   reach the main loop through `async_channel` and `gio::spawn_blocking`, and notification rows are
   diffed by key so a half-typed reply survives frequent status updates.
+
+## Mirroring diagnostics
+
+`mirror/src/diagnostics.rs` queues Rust events and GStreamer warnings/errors to a bounded writer
+thread. `shared/mirror_log.rs` defines the XDG state path, private file creation, process locks,
+rotation, redaction and filtered reads; the GTK log viewer uses the same contract. Media progress
+is sampled from local counters every five seconds. No additional phone requests are introduced.
+The GTK viewer reads a bounded tail off the UI thread and exports matching retained history.
+Machine-readable CLI commands return before diagnostic recording is initialized.
+
+### Optional scrcpy app and desktop presentation
+
+The mirror host remains the owner of the Motorola desktop service-15 session and its heartbeat.
+For `renderer:scrcpy`, its incoming compressed video ends at a fakesink; no built-in GL window,
+decoder or keyframe-stall watchdog is created. Once the phone reports the display ID, an
+independent worker validates scrcpy/ADB, selects an authorized device and launches the existing
+display capture. This preserves the native taskbar; `--new-display` is not used.
+
+The session owns a cancellable link with preparing/starting/running state. A bounded PTY reader
+line-buffers child diagnostics, detects the first Texture log, redacts the selected ADB serial
+and forwards logs through the asynchronous rotating writer. Process checks run off the host's
+media/control thread. Stop/cancel signals only the owned process group, escalates after a short
+grace, and reaps the child; Linux parent-death signalling prevents an orphaned viewer. Child
+exit/failure closes the phone session and a phone/session close cancels the worker. GTK only
+sends host commands and polls local state, preserving tray/background semantics.
+
+Apps use the same host-owned capture worker after their service-15 app session reports a display ID. Each queued request retains its renderer/quality/options independently. App failures are keyed by package and do not replace desktop failure state. Fixed native app layouts find the SDL window by child PID and apply X11 size/aspect hints while retaining its WM_CLASS. Desktop follow-computer requests set scrcpy fullscreen; source resolution and client fullscreen are distinct settings.
+
+The GTK app embeds English/Simplified Chinese/French/Spanish catalogs and defaults to English. A local procedural macro retains Rust format checking, marks formatted values, and lets the runtime substitute/reorder translated fields without parsing user content as format strings. Phone content and technical logs remain unchanged.
+
+### Folded-phone capture power and cancellation
+
+An optional embedded Android DEX helper starts over authorized ADB before the owned scrcpy viewer. A ready handshake snapshots pre-existing capture IDs. The helper discovers a new shell-owned virtual display named scrcpy, matches its adapter mirror target to the Smart Connect source, rejects ambiguous candidates, and requests power ON only for that capture when it is OFF. It monitors the selected ID/unique ID every second; it rediscovers after capture replacement. Discovery dumps are bounded and never recorded. Physical display power, folding and keyguard state are unchanged. Unsupported per-display APIs degrade to the normal viewer.
+
+The worker owns both local process groups and a uniquely named temporary DEX. Cancellation/exit reaps the helper and removes its upload; the helper also exits on stdin EOF or source disappearance. The Java source and regeneration script ship with the embedded artifact; normal Rust builds need no Java/Android SDK.
+
+The host exposes pending packages and package-scoped cancellation. Cancellation clears queued/in-flight work, closes any created visible source, and retains a 30-second marker rejecting late phone messages before they create a pipeline. Client request controls combine an atomic cancellation flag with a worker mutex, keeping blocking startup/cancellation off GTK and ensuring a late request cannot reopen a cancelled viewer.
+
+### ADB preparation and Unicode window titles
+
+`ScrcpyOptions.wakeUnlock` also applies to built-in rendering. After validating a start request, the host holds its app action or desktop action in a package-keyed preparation map. A worker reuses authorized-device selection and bounded cancellable ADB execution, wakes the phone, requests normal keyguard dismissal and verifies the lock state. The main loop consumes success before queuing service-15 app setup or service-1 desktop setup. Cancellation drops the task and removes the continuation. Failure reports through the existing package/desktop error channels. No UI-thread ADB wait or credential storage is introduced.
+
+X11 caption updates set both `_NET_WM_NAME` and `WM_NAME` to `UTF8_STRING`, preserving the UTF-8 bytes and existing SDL WM_CLASS. This fixes incorrect Latin-1 interpretation of Chinese titles after native aspect/geometry handling touches a scrcpy window.
+
+### Folded-display mouse routing
+
+The capture-power helper addresses rendering only. Android can still mark the mirror display noninteractive, causing scrcpy SDK pointer injection there to be rejected. The source app/desktop display remains interactive. With `foldMouse` enabled (default), a bounded ADB SDK-level query and scrcpy version gate select UHID mouse mode on Android 15+/scrcpy 4+. scrcpy's own per-server input-port association routes that mouse to the source display's unique ID, without global focus changes or input monitors. The independent `phoneIme` option now selects a source-associated UHID keyboard through the same version gate; disabling it retains SDK keyboard routing. It does not change the phone IME or keyboard layout. Older/unknown environments and explicit opt-out use SDK mouse mode. Relative mouse sensitivity is a child-scoped SDL hint; global pointer settings are untouched. Diagnostics record effective input modes, sensitivity and numeric SDK level; no input content is logged.
+
+### Upstream PR integration
+
+The Messages view uses daemon-owned RAM data, explicit phone sync and bounded cache-only reads; it has no recurring phone timer. UI generations discard replies after disconnect, conversation dialogs are parented/closed with the device state, sender actions suppress duplicates, and failed requests retain drafts. All four embedded languages cover the new controls.
+
+Native rotation retains the decoded queue/rate limiter and uses GPU upload/color conversion/flipping on GL sinks. scrcpy handles its own rotation and fixed layouts retain geometry. USB cable discovery and handshake are inherited from PR #8; only recently observed cable handshakes suppress LAN endpoint learning, avoiding false cable classification for ordinary USB Ethernet LAN connections. NetworkManager subprocesses are bounded; cable diagnostics log metadata only.
+
+With a UHID keyboard, the scrcpy child uses `SDL_IM_MODULE=none` and `XMODIFIERS=@im=none` so desktop Fcitx/XIM composition does not consume physical keys intended for the phone IME. SDK fallback leaves those variables inherited. These environment changes are scoped to the child; the desktop input method remains unchanged.
+
+Computer-IME mode adds a small original SDL3 adapter to the scrcpy child using a private preload file. It intercepts confirmed text events from that window, leaving candidate composition on the computer and consuming the commit before scrcpy's limited SDK text injector. A per-session unnamed Unix datagram socket carries bounded UTF-8 packets to the host. The main loop drains at most 32 packets per tick, checks the live owning session and sends service-16 command 7 with its display ID. No global keyboard listener, clipboard transport or patched scrcpy installation is involved. `--prefer-text` avoids duplicate raw letters, while navigation keys and shortcuts remain on the SDK path. Computer mode preserves the desktop IME environment; phone mode uses the separate UHID isolation behavior described above.
+
+Scrcpy audio is owned by the scrcpy child, separate from the compressed-video Smart Connect owner stream. `scrcpy.audio` now defaults to true and selects phone output instead of the previous unconditional `--no-audio`. The existing child process lifetime covers audio sockets/output cleanup. No service-15 SDP audio track, microphone capture, global mixer change or extra daemon media pipeline is added.
+
+The optional independent-audio switch selects Android app-playback capture rather than the volume-sensitive device-output path. A bounded existing SDK query gates playback capture on Android 13+. It remains scrcpy-owned and does not change Smart Connect SDP, globally set phone volume, add gain to a silent stream or create a volume-enforcement worker. App capture-policy exclusions still apply.

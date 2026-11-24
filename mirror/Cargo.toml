@@ -6,6 +6,10 @@ license = "MIT"
 description = "Phone-screen mirror viewer for smartconnectd (GStreamer webrtcbin answerer)"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+gio = "0.21"
+libc = "0.2"
 anyhow = "1"
 base64 = "0.23.1"
 gst = { package = "gstreamer", version = "0.24" }

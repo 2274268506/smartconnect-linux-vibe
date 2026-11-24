@@ -12,6 +12,8 @@
 //!
 //! Unknown or missing fields fall back to defaults, so the file survives other versions.
 
+use crate::i18n::tr;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -70,7 +72,7 @@ impl LastDevice {
 
     /// "last connected 5 min ago", or `None` when never seen.
     pub fn last_seen(&self) -> Option<String> {
-        self.last_connected.map(|t| format!("last connected {}", relative(t, now_secs())))
+        self.last_connected.map(|t| crate::tr_format!("last connected {}", "上次连接：{}", relative(t, now_secs())))
     }
 }
 
@@ -128,11 +130,11 @@ pub fn now_secs() -> u64 {
 pub fn relative(then: u64, now: u64) -> String {
     let d = now.saturating_sub(then);
     match d {
-        0..=59 => "just now".to_owned(),
-        60..=3599 => format!("{} min ago", d / 60),
-        3600..=86_399 => format!("{} h ago", d / 3600),
-        86_400..=172_799 => "yesterday".to_owned(),
-        _ => format!("{} days ago", d / 86_400),
+        0..=59 => tr("just now").to_owned(),
+        60..=3599 => crate::tr_format!("{} min ago", "{} 分钟前", d / 60),
+        3600..=86_399 => crate::tr_format!("{} h ago", "{} 小时前", d / 3600),
+        86_400..=172_799 => tr("yesterday").to_owned(),
+        _ => crate::tr_format!("{} days ago", "{} 天前", d / 86_400),
     }
 }
 

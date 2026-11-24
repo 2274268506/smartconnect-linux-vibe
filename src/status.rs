@@ -25,6 +25,7 @@ pub struct PhoneStatus {
     pub wifi_signal: Option<i64>,
     pub cell_signal: Option<i64>,
     pub bluetooth: bool,
+    /// Unread SMS/MMS from service 100 cmd 1018, not the app-notification list length.
     pub unread: Option<i64>,
     /// Path of the phone's wallpaper image, saved under the runtime dir.
     pub wallpaper: Option<String>,
@@ -178,4 +179,25 @@ pub fn runtime_dir() -> PathBuf {
     let dir = base.join("smartconnectd");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn read_on_phone_publishes_zero_and_keeps_app_notifications() {
+        let hub = StatusHub::new(true, None);
+        hub.apply(crate::notifications::SERVICE_NOTIFY, &json!({
+            "key":"example", "event":0, "data":{"apk_name":"Example","title":"Notice"}
+        }));
+        hub.apply(100, &json!({"cmd":1018,"enabled":false,"unreadCnt":2}));
+        let mut changes = hub.subscribe();
+        hub.apply(100, &json!({"cmd":1018,"enabled":false,"unreadCnt":0}));
+        let published: Value = serde_json::from_str(&changes.try_recv().unwrap()).unwrap();
+        assert_eq!(published["unread"], 0);
+        assert_eq!(published["notifications"].as_array().unwrap().len(), 1);
+        assert_eq!(serde_json::from_str::<Value>(&hub.snapshot()).unwrap()["unread"], 0);
+    }
 }

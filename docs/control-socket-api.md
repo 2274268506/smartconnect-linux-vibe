@@ -65,6 +65,11 @@ smartconnectd subscribe     # prints lines until Ctrl+C
   session**, not that the phone acted on it. The phone's answers, if any, arrive through
   [`watch`](#watch), or are reflected in `status` or `sms_state`.
 
+SMS/MMS unread status follows phone-pushed service 100 `cmd 1018` messages. There is no
+periodic metadata query. `subscribe` receives changes when the phone reports them, including
+zero; a local phone-side read may leave the PC count unchanged until another status arrives.
+Explicit SMS commands and generic `send` requests remain available when needed.
+
 ## Examples
 
 With `socat`:
@@ -434,7 +439,7 @@ The outcome arrives later in `sms_state.send_results` under the same `requestId`
 
 #### `sms_mark_read`
 
-Marks one SMS as read on the phone.
+Marks one SMS or MMS as read on the phone.
 
 ```
 → {"cmd":"sms_mark_read","id":1201}
@@ -443,7 +448,8 @@ Marks one SMS as read on the phone.
 
 | Request field | Type | Meaning |
 |---|---|---|
-| `id` | integer, required | A message `id` from `sms_thread` (SMS only, not MMS). |
+| `id` | integer, required | A message `id` from `sms_thread`. |
+| `kind` | integer, optional | 1 for SMS (default), 2 for MMS. Other values fail validation. |
 
 ## The status object
 
@@ -462,7 +468,7 @@ when unknown.
 | `wifiSignal` | int or null | Wi-Fi signal level as the phone reports it (the front-ends map 0–5 to None … Excellent). |
 | `cellSignal` | int or null | Mobile signal level, same scale. |
 | `bluetooth` | bool | The phone's Bluetooth is on. |
-| `unread` | int or null | Unread SMS/MMS count reported by the phone. |
+| `unread` | int or null | Unread SMS/MMS count reported by the phone (service 100 cmd 1018). Independent of `notifications`; do not use as an app-notification badge. |
 | `wallpaper` | string or null | Path of the phone's wallpaper image, with `?<md5>` appended so image widgets reload when it changes. Strip the suffix to open the file. |
 | `pairingQr` | string or null | Path of the current pairing QR (SVG). Rewritten in place with every new token. |
 | `pcAddress` | string or null | This PC's address on the phone's network: the local address of the last verified phone connection. `null` until the first one; kept after a disconnect. The stream host and the phone display offer the phone WebRTC candidates on this address only (unless `SMARTCONNECT_ICE_ADDRESSES` is set). |
@@ -540,11 +546,101 @@ app's *Apps* page and Mirror button use it).
 | `{"cmd":"app","pkg":"<package>","cmp":"<component>"}` | `{"message":"requested","ok":true}` | Queues a PC-initiated stream of that app (`cmp` is optional). If the app already has a window, it is raised first (niri only). Missing `pkg` gives `{"message":"app needs pkg","ok":false}`. |
 | `{"cmd":"mirror"}` | `{"message":"requested","ok":true}` | Asks the phone for a whole-screen mirror. |
 | `{"cmd":"desktop"}` | `{"message":"requested","ok":true}` | Asks the phone for Ready For's Mobile desktop view (experimental, not verified on a device). |
+| `{"cmd":"desktop","width":1920,"height":1080}` | `{"message":"requested","ok":true}` | Sets the phone desktop resolution through service 1 command 33, then requests the desktop with that service-15 size bound. Both dimensions must be integers, even, landscape, width 640–3840 and height 360–2160. Invalid sizes fail before sending anything. Close a running desktop before changing its size. The phone may limit the resolution. |
+| `{"cmd":"capabilities"}` | `{"ok":true,"desktopResolution":true,"desktopBorderless":true}` | Use before sending dimensions or window styles: older hosts ignore them. `desktopBorderless` is false for unsupported renderers. |
+| `{"cmd":"desktop_window","borderless":true}` | `{"ok":true}` | Toggle decorations on existing desktop windows without changing phone streams. Validates a boolean and rejects enabling the mode on unsupported renderers. Other app windows are unchanged. |
 | `{"cmd":"sessions"}` | `{"ok":true,"sessions":[{"displayId":67,"headless":false,"pkg":"com.example.calculator","sessionId":123,"title":"Calculator — Phone"}]}` | Lists open streams. `pkg` is `"mirror"` for the whole-screen mirror, and `"desktop"` or `"mobile"` for the Mobile desktop and virtual-phone views. `displayId` is `null` until the phone reports it. `headless` is `true` for the windowless sessions that run notification action buttons; they last a few seconds, and a UI listing windows should skip them. |
 | `{"cmd":"close","sessionId":123}` | `{"ok":true}` or `{"message":"no such session","ok":false}` | Closes that window and tells the phone to end the stream. |
 | `{"cmd":"apps"}` | `{"apps":[{"cmp":"…","iconName":"…","name":"…","pkg":"…","userId":0,"work":false}],"ok":true}` | The host's cached app list (`work` marks work-profile apps; `iconName` is the icon's file name in `~/.cache/smartconnect-linux/app-icons/`). Run `smartconnect-mirror --list-apps` to refresh it from the phone. |
 | anything else | `{"message":"commands: app {pkg,cmp?}, sessions, close {sessionId}, apps, mirror, desktop","ok":false}` | |
 | invalid JSON | `{"message":"<parse error>","ok":false}` | |
+
+Hosts advertise `displayRotation:true` when they handle native phone rotation events. Session
+entries expose the last reported `rotation` in quarter turns (0–3). Native app and virtual-phone
+windows rotate their picture and input mapping; fixed layouts retain their window geometry.
+Complete desktops and scrcpy retain their own orientation handling.
+
+`app` accepts optional `width`, `height` and `density` for an exact virtual-display request,
+e.g. `{"cmd":"app","pkg":"com.example.notes","width":720,"height":1280,"density":240}`.
+Hosts advertise `desktopScrcpy:true`, `appScrcpy:true` and `scrcpyFullscreen:true`. Both `app` and `desktop` optionally accept `renderer:"builtin"` (default)
+or `renderer:"scrcpy"`, with `scrcpy:{adbDevice:"",adbPort:5555,softwareDecode:false}`. The ADB
+selector is bounded to 255 ASCII letters/digits or `._-:%[]`; ports are 1–65535. Invalid selected
+scrcpy settings fail before phone commands. A backend/options change requires stopping the old
+app/desktop, like geometry/quality changes. `desktop_window` cannot change a running scrcpy window's
+decorations; restart instead.
+
+`desktop` additionally accepts `fullscreen:true` (boolean; default false), forwarded to scrcpy only. The GUI requests it when following the PC resolution. Sessions report `fullscreen`. App height/width fit passes matching native window dimensions and applies X11 aspect/size hints to the owned child; ordinary app windows are not fullscreen.
+
+Starting is asynchronous. Session entries add `renderer`, `requestedScrcpy`, `scrcpyState`
+(`preparing`, `starting`, `running`; null for built-in), and `scrcpyPid` (null before spawn).
+The response adds `desktopPending` while the phone creates the desktop and optional
+`desktopError` after failed ADB/scrcpy startup. Failure removes the source session; a new desktop
+request clears the error. App failures are reported separately in root `appErrors:{"com.example.notes":"<error>"}`; retrying that app clears its old error. They do not overwrite `desktopError` or stop unrelated sessions. Closing the child also closes the source and vice versa. PID refers
+only to the host-owned child. The API does not accept arbitrary scrcpy command-line arguments.
+
+Hosts advertise `streamQuality:true` for optional `quality:{bitrateKbps:2500,fps:30}` on
+`app` and `desktop`. Omitted/null members mean automatic. Bitrate is 300–50000 kbit/s; FPS
+is 1–60. Invalid values fail before phone requests. Sessions expose `requestedQuality` and
+`displayRateDropped` (frames skipped by the decoded-frame limiter, distinct from renderer drops).
+A different profile for an open app/desktop requires closing it first. The bitrate ceiling is
+negotiated through video SDP; FPS is also limited at the receiver, with no encoder-rate guarantee.
+
+`appLayout:true` means the default XWayland window path supports optional app
+`layout:{fixed:true,ratioWidth:9,ratioHeight:16,fit:"height"}`. `fit` is `manual`, `height` or
+`width`. A fixed layout requires a valid custom app resolution matching the ratio within
+rounding tolerance. Compute physical-pixel width/height before sending; the GUI handles this
+from the target monitor. Height/width fit requests borderless native-sized client geometry;
+manual fixed ratio only sets aspect hints. Oversized source dimensions fail validation.
+Sessions expose `requestedLayout`; headless actions and view sessions do not inherit app layout.
+
+Hosts advertise `appResolution:true`. Width/height must both be present, even and 320–3840;
+the shorter side must be at most 2160. Density defaults to 320 and must be 120–640; density
+alone is rejected. Omitting all three retains automatic sizing. Invalid/view-session requests
+fail before any phone command. An existing app window must be closed before changing its
+profile; a pending launch with another profile is rejected. Profiles travel with individual
+queued requests and do not change other apps or the desktop.
+
+For custom app sessions, `requestedWidth`, `requestedHeight` and `requestedDensity` expose the
+requested values, while `width`, `height` and `density` retain the phone's actual report. Null
+requested values mean automatic sizing. The phone/app can impose additional limits.
+
+`desktop` additionally accepts `scale`, an integer percentage from 100 to 300 (omitted: 100).
+Hosts advertise `desktopScaling:true`. A changed scale needs the desktop session closed first;
+GUI preferences offer restart-to-apply. `requestedScale` reports the desktop request and `density`
+is the phone-reported DPI, or null before known. Scaling changes virtual-display density and
+physical dimensions, preserving the encoded width/height; standalone app streams retain their
+existing behavior. The GTK default resolves the scale from the monitor containing its window.
+
+The `desktop` command also accepts an optional boolean `borderless`, applied to new or existing
+desktop sessions. Session entries expose their current `borderless` flag.
+
+Session entries include `udpReceiveBuffers`, an array of effective `SO_RCVBUF` byte values
+for libnice UDP sockets discovered on that session. The viewer requests 4 MiB per socket;
+Linux reports a doubled value for kernel accounting and caps the request at `net.core.rmem_max`.
+An empty array means no sockets have been discovered yet. No system sysctls are changed.
+
+Session entries also include `videoProgress`: cumulative `rtpPackets`, `decodedFrames`,
+`inputEvents` and recovery `keyframeRequests`, plus nullable `lastPacketAgeMs`,
+`lastDecodedAgeMs` and `lastInputAgeMs`. Counters contain no video or input contents;
+input counts include button presses, scrolls and key presses, excluding pointer motion.
+Compare snapshots: increasing packets without decoded frames suggests a receive/decode stall;
+increasing decoded frames without renderer progress suggests a rendering stall. No new
+packets on an unchanged phone screen can be normal. Input transmission is not an acknowledgement
+that the phone acted on it.
+
+Sessions also expose `streamTiming` (received/released packet totals, sender RTP timestamp
+regressions, maximum arrival/RTP interval difference, maximum jitterbuffer hold and packets
+held over 100 ms) and `jitterStats` (per-buffer pushed/lost/late/duplicate packets,
+`avgJitterNs` and retransmission requests). Counters/maxima cover the session lifetime;
+queue residence is measured locally, not end-to-end latency. Static displays may stop sending.
+
+Session entries include optional `renderStats:{rendered,dropped}` cumulative sink frame counters
+(or null before a renderer exists or with a sink that does not expose statistics).
+
+Session entries also include `width`/`height` (the phone's reported stream dimensions, or null
+until known). For `pkg:"desktop"`, `requestedWidth`/`requestedHeight` report the requested desktop bounds
+when available. These fields describe the media size; they do not measure window size or
+confirm that every frame was presented. Unknown fields can be ignored by older clients.
 
 The host starts streams one at a time. It waits up to 20 s for the phone to answer each start, so
 `requested` doesn't mean the window is open yet. Poll `sessions` to see it appear. A request for an
@@ -557,3 +653,29 @@ The API isn't versioned yet and may change between releases. To stay compatible:
 - ignore fields you don't know (the GTK app gives every status field a default value);
 - don't depend on key order or on exact `message` texts, except for checking `ok`;
 - reconnect when the socket closes, because the daemon may have restarted.
+
+### Cancelling queued and preparing mirror starts
+
+`capabilities` advertises `cancelStart:true`. Send `{"cmd":"cancel","pkg":"desktop"}`, `"mirror"`, or an app package. This is idempotent: queued/in-flight starts are removed, matching visible sessions are closed, and owned scrcpy/helper processes are cancelled asynchronously. App cancellation leaves other apps running. View cancellation also sends the existing service-1 stop command; view modes remain mutually exclusive.
+
+`sessions` adds `pending:["com.example.notes","desktop"]` (sorted unique packages) and `mirrorPending`, alongside `desktopPending`. Session entries cover the later scrcpy preparing/starting phases. Late invites/offers for a cancelled package are discarded for 30 seconds; a late known session ID receives service-15 close without an SDP answer. An explicit app/desktop/mirror request clears its cancellation marker so a user can retry. GUI cancellation serializes with the request worker to prevent cancellation during host startup from racing a delayed start.
+
+### Optional ADB preparation before starting
+
+Hosts advertise `adbWakeUnlock:true`. Both `app` and `desktop` accept `scrcpy:{wakeUnlock:true,adbDevice:"",adbPort:5555}`, even with `renderer:"builtin"`; omitted `wakeUnlock` defaults to false. ADB settings are validated before preparing. No scrcpy executable is needed for this preparation when using the built-in renderer.
+
+The request is acknowledged asynchronously. `sessions.pending` includes packages waiting on ADB and `adbPreparing:["com.example.notes"]` identifies that stage. No Smart Connect app/desktop start command is sent before wake/dismiss and unlocked-state verification succeed. Failure appears in `appErrors` or `desktopError` and removes the pending start; `cancel {pkg}` also cancels the owned ADB process and prevents a delayed continuation. Session `requestedScrcpy` retains the selected `wakeUnlock` value. Secure-keyguard/unknown-policy results stop preparation and ask for manual authentication.
+
+Hosts advertise `foldMouse:true` for `scrcpy.foldMouse` (boolean, default true) on app/desktop commands and `requestedScrcpy`. Enabled selects a source-bound UHID mouse only for a virtual source, Android SDK 35+ and scrcpy major 4+; otherwise the host retains SDK mouse input. False always requests SDK mouse input. Keyboard mode is selected independently through `phoneIme`. The choice applies on a new projection, never changes a running child, and does not add new Smart Connect phone protocol fields.
+
+### Cache-only Messages reads
+
+`sms_threads` and `sms_thread` accept `refresh:false` to read RAM without issuing a phone query. Default/true retains explicit sync behavior. Responses advertise `cacheOnlySupported:true`; clients should check this before repeated cache reads, since older daemons ignore unknown fields. The GTK Messages page requests one sync on opening/manual refresh, then performs at most eight cache-only reads over two seconds to collect asynchronous replies. It does not schedule recurring phone polling. Opening an unread message can mark it read with its actual kind. A successful `sms_send` reply acknowledges handoff only; delivery remains in `sms_state.send_results`.
+
+Hosts advertise `scrcpyInputSettings:true`. `scrcpy.mouseSpeedPercent` is an integer from 25 through 400 (default 100). It sets the child-only `SDL_MOUSE_RELATIVE_SPEED_SCALE` when the effective mouse mode is UHID; SDK mouse input is unchanged. `scrcpy.phoneIme` is a boolean (default true), selecting a source-bound UHID keyboard on Android SDK 35+/scrcpy 4+ with a virtual source. False or unsupported/unknown environments retain SDK keyboard injection. Both fields are returned in `requestedScrcpy` and apply when creating a new projection. For example: `{"cmd":"desktop","renderer":"scrcpy","scrcpy":{"foldMouse":true,"mouseSpeedPercent":150,"phoneIme":true}}`.
+
+`capabilities.computerIme` reports whether the optional SDL3 adapter was built. `scrcpy.computerIme` is a boolean, default false, returned in `requestedScrcpy`. True takes precedence over the saved `phoneIme` flag and selects SDK keyboard plus `--prefer-text`; only confirmed SDL text commits use Smart Connect service 16 command 7 for the owning session's current display. This requires scrcpy 5+; unsupported environments return a startup error. There is no new public text-injection socket command.
+
+Hosts advertise `scrcpyAudio:true`. `scrcpy.audio` is a boolean (default true), persisted independently for app/desktop and exposed in `requestedScrcpy`. True passes `--audio-source=output`; false passes `--no-audio`. It never selects a microphone source or requires audio to keep video running. The selection applies on the next projection, without changing the built-in renderer.
+
+`capabilities.independentAudio:true` supports boolean `scrcpy.independentAudio` (default false), persisted and exposed in `requestedScrcpy`. With `audio:true`, it selects `--audio-source=playback` and requires a verified Android SDK level >=33; unsupported/unknown levels return a startup error. With `audio:false`, `--no-audio` wins and the saved independent setting is ignored. No phone volume setter or duplication flag is sent.

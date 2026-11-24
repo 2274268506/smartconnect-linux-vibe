@@ -8,9 +8,9 @@
 //! 3. Private IPv4 (10/8, 172.16/12, 192.168/16) not owned by a virtual interface (docker*, br-*,
 //!    veth*, virbr*, tailscale*, wg*, …), as listed by `ip -j -4 addr`.
 //!
-//! Only UDP candidates are offered (the phone disables TCP candidates). Filtering only changes what
-//! we *signal*: libnice still runs its checks from every local address, so the phone can also
-//! reach us as a peer-reflexive candidate.
+//! Only UDP candidates are offered (the phone disables TCP candidates). Address/list filters
+//! also bind libnice gathering to those local addresses, so
+//! a peer-reflexive Bluetooth candidate cannot bypass a selected LAN path.
 
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
@@ -59,6 +59,20 @@ impl CandidateFilter {
         let env_set = env.as_deref().is_some_and(|e| !e.trim().is_empty());
         let interfaces = if env_set || pc_address.is_some() { Vec::new() } else { local_interfaces() };
         Self::new(env.as_deref(), pc_address.as_deref(), &interfaces)
+    }
+
+    /// Match CIDRs against local IPv4 addresses; literal IPv4/IPv6 addresses remain explicit.
+    pub fn local_bindings(&self, interfaces: &[(String, String)]) -> Option<Vec<String>> {
+        let mut addresses = match self {
+            Self::Address(address) => vec![address.clone()],
+            Self::List(entries) => entries.iter().flat_map(|entry| {
+                if entry.parse::<std::net::IpAddr>().is_ok() { vec![entry.clone()] }
+                else { interfaces.iter().filter(|(_,address)|entry_matches(entry,address))
+                    .map(|(_,address)|address.clone()).collect() }
+            }).collect(),
+            Self::Any | Self::PrivateLan { .. } => return None,
+        };
+        addresses.sort();addresses.dedup();Some(addresses)
     }
 
     /// Whether to send this local candidate (`candidate:… <address> <port> typ …`) to the phone.
@@ -191,9 +205,82 @@ pub fn pc_address_from_status(status: &Value) -> Option<String> {
     status.get("pcAddress").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).map(str::to_owned)
 }
 
+/// Restrict gathering before ICE streams are created. Filtering signalling alone still lets
+/// the phone nominate an unadvertised peer-reflexive path (notably a slow Bluetooth PAN).
+pub fn bind_agent(webrtc: &gst::Element, filter: &CandidateFilter) -> anyhow::Result<()> {
+    use gst::glib::{self, translate::*};
+    use gst::prelude::*;
+    use std::ffi::CString;
+    #[link(name="nice")]
+    unsafe extern "C" {
+        fn nice_address_new() -> *mut std::ffi::c_void;
+        fn nice_address_free(address: *mut std::ffi::c_void);
+        fn nice_address_set_from_string(address: *mut std::ffi::c_void, text: *const libc::c_char) -> libc::c_int;
+        fn nice_agent_add_local_address(agent: *mut glib::gobject_ffi::GObject, address: *mut std::ffi::c_void) -> libc::c_int;
+    }
+    let Some(addresses)=filter.local_bindings(&local_interfaces()) else { return Ok(()); };
+    anyhow::ensure!(!addresses.is_empty(), "ICE address filter matches no local addresses");
+    let ice=webrtc.property::<glib::Object>("ice-agent");
+    anyhow::ensure!(ice.find_property("agent").is_some(), "ICE backend has no libnice agent");
+    let agent=ice.property::<glib::Object>("agent");
+    for address in &addresses {
+        let text=CString::new(address.as_str())?;
+        // SAFETY: the public libnice API allocates the opaque NiceAddress, copies it into
+        // NiceAgent, then releases it. The GObject reference remains alive throughout.
+        let ok=unsafe {
+            let raw=nice_address_new();
+            anyhow::ensure!(!raw.is_null(), "could not allocate ICE address");
+            let valid=nice_address_set_from_string(raw,text.as_ptr())!=0;
+            let added=valid && nice_agent_add_local_address(agent.to_glib_none().0,raw)!=0;
+            nice_address_free(raw);added
+        };
+        anyhow::ensure!(ok, "could not bind the selected ICE address");
+    }
+    println!("ICE gathering restricted to {} selected local address(es)", addresses.len());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_address_restricts_actual_libnice_sockets() {
+        use gst::prelude::*;
+        use gst::glib::{self,translate::*};
+        unsafe extern "C" {
+            fn nice_agent_add_stream(agent:*mut glib::gobject_ffi::GObject,components:u32)->u32;
+            fn nice_agent_gather_candidates(agent:*mut glib::gobject_ffi::GObject,stream:u32)->libc::c_int;
+            fn nice_agent_get_sockets(agent:*mut glib::gobject_ffi::GObject,stream:u32,component:u32)->*mut glib::ffi::GPtrArray;
+        }
+        gst::init().unwrap();
+        let webrtc=gst::ElementFactory::make("webrtcbin").build().unwrap();
+        bind_agent(&webrtc,&CandidateFilter::Address("127.0.0.1".into())).unwrap();
+        let ice=webrtc.property::<glib::Object>("ice-agent");
+        let agent=ice.property::<glib::Object>("agent");
+        unsafe {
+            let stream=nice_agent_add_stream(agent.to_glib_none().0,1);
+            assert_ne!(nice_agent_gather_candidates(agent.to_glib_none().0,stream),0);
+            let sockets=nice_agent_get_sockets(agent.to_glib_none().0,stream,1);
+            assert!(!sockets.is_null());assert!((*sockets).len>0);
+            for n in 0..(*sockets).len as usize {
+                let socket:gio::Socket=from_glib_none((*sockets).pdata.add(n).read().cast());
+                use gio::prelude::*;
+                let address=socket.local_address().unwrap().downcast::<gio::InetSocketAddress>().unwrap();
+                assert_eq!(address.address().to_string(),"127.0.0.1");
+            }
+            glib::ffi::g_ptr_array_unref(sockets);
+        }
+    }
+
+    #[test]
+    fn gathering_uses_the_same_addresses_as_signalling() {
+        let interfaces=vec![("wlan0".into(),"192.168.1.20".into()),("bnep0".into(),"10.0.0.2".into())];
+        let f=CandidateFilter::new(Some("192.168.1.0/24,192.168.1.20"),None,&interfaces);
+        assert_eq!(f.local_bindings(&interfaces),Some(vec!["192.168.1.20".into()]));
+        assert_eq!(CandidateFilter::Address("192.168.1.20".into()).local_bindings(&interfaces),Some(vec!["192.168.1.20".into()]));
+        assert_eq!(CandidateFilter::Any.local_bindings(&interfaces),None);
+    }
 
     fn cand(addr: &str) -> String {
         format!("candidate:1 1 UDP 2015363327 {addr} 52342 typ host")

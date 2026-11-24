@@ -325,3 +325,19 @@ async fn connect_button_trigger_gets_an_invite() {
     back.send(Message::text(phone_hello(invite["token"].as_str().unwrap()))).await.unwrap();
     assert_eq!(next_json(&mut back).await["data"]["token"], "OK");
 }
+
+#[tokio::test]
+async fn cable_mode_gets_an_invite_for_the_reached_interface() {
+    let h=start().await;
+    let qr=scan_qr(&h);
+    let mut ws=phone_connect_path(&qr,"/readyfor/rdp").await;
+    ws.send(Message::text(json!({"action":1,"serviceId":1,"status":1,"ver":3,"device":{"deviceName":"example phone"}}).to_string())).await.unwrap();
+    let hello=next_json(&mut ws).await;
+    assert_eq!(hello["action"],1);assert_eq!(hello["serviceId"],1);assert_eq!(hello["status"],1);
+    ws.send(Message::text(json!({"serviceId":19,"cmd":0,"reqId":73}).to_string())).await.unwrap();
+    let invite=next_json(&mut ws).await;
+    assert_eq!(invite["reqId"],73);assert_eq!(invite["errorCode"],0);
+    assert_eq!(invite["policies"][0]["wifi"][0],h.addr.ip().to_string());
+    assert_eq!(invite["policies"][1]["usb"][0],h.addr.ip().to_string());
+    ws.close(None).await.unwrap();
+}

@@ -1,0 +1,14 @@
+[package]
+name = "smartconnect-i18n-macros"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Compile-time checked localized format strings for the Smart Connect GUI"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["parsing"] }
+quote = "1"
+proc-macro2 = "1"

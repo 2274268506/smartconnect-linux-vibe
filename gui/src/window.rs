@@ -2,6 +2,8 @@
 //! view switcher, driven by daemon status events. Pairing and Preferences live in dialogs opened
 //! from the device menu.
 
+use crate::i18n::tr;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -19,19 +21,27 @@ use crate::display::DisplayPage;
 use crate::files::FilesPage;
 use crate::lastdevice::{self, LastDevice};
 use crate::lifecycle::{self, Daemon};
+use crate::messages::MessagesPage;
 use crate::mirror::{Exit, Mirror};
 use crate::tray;
+use crate::prefs;
 
 const SIGNAL_WORDS: [&str; 6] = ["None", "Very weak", "Weak", "Fair", "Good", "Excellent"];
 /// Adwaita's `network-{wireless,cellular}-signal-<x>-symbolic` names for levels 0–5.
 const SIGNAL_ICONS: [&str; 6] = ["none", "weak", "weak", "ok", "good", "excellent"];
+
+fn visible_notifications<'a>(notifications: &'a [Notification], dismissed: &'a HashSet<String>)
+    -> impl Iterator<Item = &'a Notification> + 'a
+{
+    notifications.iter().filter(|notification| !dismissed.contains(&notification.key))
+}
 
 fn signal_level(level: Option<i64>) -> Option<usize> {
     level.map(|l| l.clamp(0, 5) as usize)
 }
 
 fn signal_text(level: Option<i64>) -> &'static str {
-    signal_level(level).map_or("—", |l| SIGNAL_WORDS[l])
+    signal_level(level).map_or("—", |l| tr(SIGNAL_WORDS[l]))
 }
 
 pub struct Ui {
@@ -40,7 +50,7 @@ pub struct Ui {
     root: gtk::Stack,
     /// Label under the spinner on the "connecting" page ("Connecting…" / "Starting smartconnectd…").
     connecting_label: gtk::Label,
-    /// The five-view stack, kept so pages can be switched programmatically (the unread shortcut).
+    /// The view stack, kept so pages can be switched programmatically (the notification shortcut).
     views: adw::ViewStack,
     switcher: adw::ViewSwitcher,
     switcher_bar: adw::ViewSwitcherBar,
@@ -53,8 +63,10 @@ pub struct Ui {
     pair: PairDialog,
     apps: Rc<AppsPage>,
     display: Rc<DisplayPage>,
+    desktop: Rc<crate::mobile_desktop::DesktopPage>,
     cross: Rc<CrossControlPage>,
     files: Rc<FilesPage>,
+    messages: Rc<MessagesPage>,
     /// The system-tray item, when the desktop has a StatusNotifierHost.
     tray: RefCell<Option<tray::Tray>>,
     /// Tracks how the daemon is running, so Quit stops the right thing.
@@ -72,6 +84,8 @@ struct State {
     mirror: Option<Mirror>,
     /// A whole-screen mirror request to the stream host is in flight.
     mirror_pending: bool,
+    mirror_cancelling: bool,
+    mirror_start_control: Option<std::sync::Arc<apps::StartControl>>,
     show_qr: bool,
     qr_path: Option<String>,
     rows: HashMap<String, NotifRow>,
@@ -118,6 +132,7 @@ struct DeviceMenu {
     check: gtk::Image,
     pair: gtk::Button,
     prefs: gtk::Button,
+    logs: gtk::Button,
     /// Connect / Disconnect, or "Start service" while the daemon is down.
     connect: gtk::Button,
 }
@@ -166,8 +181,9 @@ struct PhonePage {
     connect_label: gtk::Label,
     /// Shown when no phone is paired.
     pair: gtk::Button,
-    unread_card: gtk::Button,
-    unread_label: gtk::Label,
+    notifications_card: gtk::Button,
+    notification_count: gtk::Label,
+    sms_unread: gtk::Label,
     cross_group: adw::PreferencesGroup,
     /// Opens the Cross Control page.
     cross: adw::ActionRow,
@@ -313,20 +329,22 @@ impl DeviceMenu {
         device_row.append(&names);
         device_row.append(&check);
 
-        let pair = menu_item("Pair new phone…");
-        let prefs = menu_item("Preferences");
-        let connect = menu_item("Disconnect");
+        let pair = menu_item(tr("Pair new phone…"));
+        let prefs = menu_item(tr("Preferences"));
+        let logs = menu_item(tr("Mirroring logs"));
+        let connect = menu_item(tr("Disconnect"));
 
         let pop_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
         pop_box.append(&device_row);
         pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         pop_box.append(&pair);
         pop_box.append(&prefs);
+        pop_box.append(&logs);
         pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         pop_box.append(&connect);
         let popover = gtk::Popover::builder().child(&pop_box).width_request(240).build();
         let button = gtk::MenuButton::builder().child(&content).popover(&popover).build();
-        Self { button, popover, dot, label, menu_name, menu_sub, check, pair, prefs, connect }
+        Self { button, popover, dot, label, menu_name, menu_sub, check, pair, prefs, logs, connect }
     }
 }
 
@@ -343,7 +361,7 @@ impl DownPage {
         card.append(&thumb);
         card.append(&text);
         let start = gtk::Button::builder()
-            .label("Start service")
+            .label(tr("Start service"))
             .css_classes(["pill", "suggested-action"])
             .halign(gtk::Align::Center)
             .build();
@@ -352,8 +370,8 @@ impl DownPage {
         column.append(&start);
         let page = adw::StatusPage::builder()
             .icon_name("network-offline-symbolic")
-            .title("Smart Connect service isn't running")
-            .description("Start it to reach your phone. This window reconnects on its own once it is up.")
+            .title(tr("Smart Connect service isn't running"))
+            .description(tr("Start it to reach your phone. This window reconnects on its own once it is up."))
             .child(&column)
             .build();
         (Self { card, wallpaper, wallpaper_stack, name, sub, start }, page.upcast())
@@ -389,14 +407,14 @@ impl PhonePage {
         info.append(&subtitle);
         info.append(&stats);
 
-        let mirror = gtk::Button::builder().css_classes(["suggested-action"]).label("Mirror screen").build();
+        let mirror = gtk::Button::builder().css_classes(["suggested-action"]).label(tr("Mirror screen")).build();
         let connect_spinner = adw::Spinner::builder().visible(false).build();
-        let connect_label = gtk::Label::new(Some("Connect"));
+        let connect_label = gtk::Label::new(Some(tr("Connect")));
         let connect_box = gtk::Box::builder().spacing(8).halign(gtk::Align::Center).build();
         connect_box.append(&connect_spinner);
         connect_box.append(&connect_label);
         let connect = gtk::Button::builder().css_classes(["suggested-action"]).child(&connect_box).visible(false).build();
-        let pair = gtk::Button::builder().css_classes(["suggested-action"]).label("Pair a phone").visible(false).build();
+        let pair = gtk::Button::builder().css_classes(["suggested-action"]).label(tr("Pair a phone")).visible(false).build();
         let actions = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).valign(gtk::Align::Center).build();
         actions.append(&mirror);
         actions.append(&connect);
@@ -407,26 +425,28 @@ impl PhonePage {
         hero.append(&info);
         hero.append(&actions);
 
-        // ── Unread shortcut ──────────────────────────────────────────────────
-        let unread_label = gtk::Label::builder().xalign(0.0).hexpand(true).build();
-        let unread_link = gtk::Label::builder().label("Open notifications ›").css_classes(["accent"]).build();
-        let unread_row = gtk::Box::builder().spacing(8).build();
-        unread_row.append(&unread_label);
-        unread_row.append(&unread_link);
-        let unread_card = gtk::Button::builder().css_classes(["card", "sc-card"]).visible(false).child(&unread_row).build();
+        // ── Notification shortcut ──────────────────────────────────────────────────
+        let notification_count = gtk::Label::builder().xalign(0.0).hexpand(true).build();
+        let notifications_link = gtk::Label::builder().label(tr("Open notifications ›")).css_classes(["accent"]).build();
+        let notifications_row = gtk::Box::builder().spacing(8).build();
+        notifications_row.append(&notification_count);
+        notifications_row.append(&notifications_link);
+        let notifications_card = gtk::Button::builder().css_classes(["card", "sc-card"]).visible(false).child(&notifications_row).build();
+        let sms_unread = gtk::Label::builder().xalign(0.0).wrap(true).visible(false)
+            .css_classes(["dim-label"]).build();
 
         // ── Cross Control ─────────────────────────────────────────────────────
-        let cross_group = adw::PreferencesGroup::builder().title("Cross Control").build();
+        let cross_group = adw::PreferencesGroup::builder().title(tr("Cross Control")).build();
         let cross = adw::ActionRow::builder()
-            .title("Cross Control")
-            .subtitle("Shared mouse and keyboard, duplicate display or extend display")
+            .title(tr("Cross Control"))
+            .subtitle(tr("Shared mouse and keyboard, duplicate display or extend display"))
             .activatable(true)
             .build();
         cross.add_prefix(&gtk::Image::from_icon_name("input-mouse-symbolic"));
         cross.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         cross_group.add(&cross);
 
-        // Nothing here expands vertically: the unread row and Cross Control sit right under the card.
+        // Nothing here expands vertically: the notification row and Cross Control sit right under the card.
         let column = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
@@ -437,7 +457,8 @@ impl PhonePage {
             .margin_end(12)
             .build();
         column.append(&hero);
-        column.append(&unread_card);
+        column.append(&notifications_card);
+        column.append(&sms_unread);
         column.append(&cross_group);
 
         let page = Self {
@@ -456,8 +477,9 @@ impl PhonePage {
             connect_spinner,
             connect_label,
             pair,
-            unread_card,
-            unread_label,
+            notifications_card,
+            notification_count,
+            sms_unread,
             cross_group,
             cross,
         };
@@ -468,19 +490,19 @@ impl PhonePage {
 impl NotifPage {
     fn build() -> (Self, gtk::Widget) {
         // "Muted apps" sits above the list (or the empty state) so it is reachable either way.
-        let muted = adw::ExpanderRow::builder().title("Muted apps").build();
+        let muted = adw::ExpanderRow::builder().title(tr("Muted apps")).build();
         let muted_group = adw::PreferencesGroup::builder().visible(false).build();
         muted_group.add(&muted);
         let empty = adw::StatusPage::builder()
             .icon_name("preferences-system-notifications-symbolic")
-            .title("No Notifications")
-            .description("Notifications from the phone show up here while it is connected.")
+            .title(tr("No Notifications"))
+            .description(tr("Notifications from the phone show up here while it is connected."))
             .vexpand(true)
             .build();
 
         // The day header: "Today" + Clear all (we have no timestamps, so everything is Today).
-        let today_label = gtk::Label::builder().label("Today").xalign(0.0).hexpand(true).css_classes(["heading"]).build();
-        let clear_all = gtk::Button::builder().label("Clear all").css_classes(["flat"]).build();
+        let today_label = gtk::Label::builder().label(tr("Today")).xalign(0.0).hexpand(true).css_classes(["heading"]).build();
+        let clear_all = gtk::Button::builder().label(tr("Clear all")).css_classes(["flat"]).build();
         let today = gtk::Box::builder().spacing(8).visible(false).build();
         today.append(&today_label);
         today.append(&clear_all);
@@ -514,14 +536,14 @@ impl PairDialog {
         qr_box.append(&qr);
 
         let steps = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).hexpand(true).valign(gtk::Align::Center).build();
-        for (i, text) in ["Open Smart Connect on your phone", "Tap + and choose “Scan QR code”", "Point the camera at this code"].iter().enumerate() {
+        for (i, text) in [tr("Open Smart Connect on your phone"), tr("Tap + and choose “Scan QR code”"), tr("Point the camera at this code")].iter().enumerate() {
             let row = gtk::Box::builder().spacing(10).build();
             row.append(&gtk::Label::builder().label(&format!("{}", i + 1)).css_classes(["caption", "dim-label"]).valign(gtk::Align::Start).build());
             row.append(&gtk::Label::builder().label(*text).xalign(0.0).wrap(true).build());
             steps.append(&row);
         }
         let spinner = adw::Spinner::new();
-        let status = gtk::Label::builder().label("Waiting for phone…").xalign(0.0).hexpand(true).wrap(true).css_classes(["dim-label"]).build();
+        let status = gtk::Label::builder().label(tr("Waiting for phone…")).xalign(0.0).hexpand(true).wrap(true).css_classes(["dim-label"]).build();
         let status_row = gtk::Box::builder().spacing(8).margin_top(4).build();
         status_row.append(&spinner);
         status_row.append(&status);
@@ -530,7 +552,7 @@ impl PairDialog {
         let top = gtk::Box::builder().spacing(18).build();
         top.append(&qr_box);
         top.append(&steps);
-        let button = gtk::Button::builder().label("New code").halign(gtk::Align::End).build();
+        let button = gtk::Button::builder().label(tr("New code")).halign(gtk::Align::End).build();
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
@@ -548,7 +570,7 @@ impl PairDialog {
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
         toolbar.set_content(Some(&content));
-        let dialog = adw::Dialog::builder().title("Pair a new phone").content_width(520).child(&toolbar).build();
+        let dialog = adw::Dialog::builder().title(tr("Pair a new phone")).content_width(520).child(&toolbar).build();
         let fw = firewall.clone();
         dialog.connect_map(move |_| fw.check());
         Self { dialog, qr, qr_box, status, spinner, button, firewall }
@@ -563,6 +585,7 @@ impl Ui {
         let toasts = adw::ToastOverlay::new();
         let (apps, apps_w) = AppsPage::build(&toasts);
         let (display, display_w) = DisplayPage::build(&toasts);
+        let (desktop, desktop_w) = crate::mobile_desktop::DesktopPage::build(&toasts);
         let (cross, cross_modes, cross_position) = CrossControlPage::build(&toasts, display.clone());
         // One Display tab: the Cross Control modes and the phone's position on top, then the
         // display session and its settings.
@@ -580,15 +603,18 @@ impl Ui {
         let display_clamp = adw::Clamp::builder().maximum_size(1100).tightening_threshold(1100).child(&display_column).build();
         let display_w = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&display_clamp).build();
         let (files, files_w) = FilesPage::build(&toasts);
-        views.add_titled_with_icon(&phone_w, Some("phone"), "Phone", "phone-symbolic");
-        views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
-        views.add_titled_with_icon(&display_w, Some("display"), "Display", "video-display-symbolic");
-        views.add_titled_with_icon(&files_w, Some("files"), "Files", "folder-symbolic");
-        let notif_page = views.add_titled_with_icon(&notifs_w, Some("notifications"), "Notifications", "preferences-system-notifications-symbolic");
+        let (messages, messages_w) = MessagesPage::build();
+        views.add_titled_with_icon(&phone_w, Some("phone"), tr("Phone"), "phone-symbolic");
+        views.add_titled_with_icon(&apps_w, Some("apps"), tr("Apps"), "view-app-grid-symbolic");
+        views.add_titled_with_icon(&desktop_w, Some("desktop"), tr("Desktop mode"), "computer-symbolic");
+        views.add_titled_with_icon(&display_w, Some("display"), tr("Display"), "video-display-symbolic");
+        views.add_titled_with_icon(&files_w, Some("files"), tr("Files"), "folder-symbolic");
+        views.add_titled_with_icon(&messages_w, Some("messages"), tr("Messages"), "mail-message-new-symbolic");
+        let notif_page = views.add_titled_with_icon(&notifs_w, Some("notifications"), tr("Notifications"), "preferences-system-notifications-symbolic");
 
         let (down_page, down) = DownPage::build();
         let spinner = adw::Spinner::builder().width_request(48).height_request(48).build();
-        let connecting_label = gtk::Label::builder().label("Connecting…").css_classes(["dim-label"]).build();
+        let connecting_label = gtk::Label::builder().label(tr("Connecting…")).css_classes(["dim-label"]).build();
         let connecting = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
@@ -645,8 +671,10 @@ impl Ui {
             pair,
             apps,
             display,
+            desktop,
             cross,
             files,
+            messages,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
             state: RefCell::new(State { last: lastdevice::load(), ..State::default() }),
@@ -661,12 +689,18 @@ impl Ui {
             let Some(ui) = weak.upgrade() else { return };
             let name = views.visible_child_name();
             ui.display.set_visible(name.as_deref() == Some("display"));
+            ui.desktop.set_visible(name.as_deref() == Some("desktop"));
             match name.as_deref() {
                 Some("apps") => ui.apps.shown(),
                 Some("display") => ui.cross.refresh(),
+                Some("messages") => ui.messages.refresh(),
                 Some("notifications") => ui.load_muted(),
                 _ => {}
             }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.messages.refresh.connect_clicked(move |_| {
+            if let Some(ui)=weak.upgrade(){ui.messages.refresh();}
         });
         let weak = Rc::downgrade(&ui);
         ui.apps.connect_sessions_changed(move || {
@@ -719,7 +753,7 @@ impl Ui {
             }
         });
         let weak = Rc::downgrade(self);
-        self.phone.unread_card.connect_clicked(move |_| {
+        self.phone.notifications_card.connect_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {
                 ui.views.set_visible_child_name("notifications");
             }
@@ -756,6 +790,10 @@ impl Ui {
                     ui.toggle_connection();
                 }
             }
+        });
+        let weak = Rc::downgrade(self);
+        self.device.logs.connect_clicked(move |_| {
+            if let Some(ui)=weak.upgrade() { ui.device.popover.popdown(); crate::logs::show(&ui.window); }
         });
         let weak = Rc::downgrade(self);
         self.device.pair.connect_clicked(move |_| {
@@ -836,7 +874,7 @@ impl Ui {
             st.service_starting = true;
         }
         self.down.start.set_sensitive(false);
-        self.down.start.set_label("Starting…");
+        self.down.start.set_label(tr("Starting…"));
         self.refresh_device_offline();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
@@ -844,7 +882,7 @@ impl Ui {
             let Some(ui) = weak.upgrade() else { return };
             ui.state.borrow_mut().service_starting = false;
             ui.down.start.set_sensitive(true);
-            ui.down.start.set_label("Start service");
+            ui.down.start.set_label(tr("Start service"));
             match result {
                 Ok((daemon, true)) => {
                     *ui.daemon_ctl.borrow_mut() = daemon;
@@ -910,8 +948,8 @@ impl Ui {
     /// Opens the Preferences dialog (built fresh so the Start-at-login switch reflects the disk).
     fn open_preferences(self: &Rc<Self>) {
         let start_at_login = adw::SwitchRow::builder()
-            .title("Start at login")
-            .subtitle("Launch Smart Connect in the background (tray only) when you log in")
+            .title(tr("Start at login"))
+            .subtitle(tr("Launch Smart Connect in the background (tray only) when you log in"))
             .build();
         start_at_login.set_active(lifecycle::autostart_enabled());
         let weak = Rc::downgrade(self);
@@ -922,6 +960,54 @@ impl Ui {
         });
         let group = adw::PreferencesGroup::new();
         group.add(&start_at_login);
+        let language = adw::ComboRow::builder()
+            .title(tr("Language"))
+            .subtitle(tr("Restart the app to apply the selected language"))
+            .model(&gtk::StringList::new(&[tr("Follow system"), "简体中文", "English", "Français", "Español"]))
+            .selected(prefs::load().language.index())
+            .build();
+        let restart = gtk::Button::builder()
+            .label(tr("Restart to apply"))
+            .valign(gtk::Align::Center)
+            .sensitive(prefs::load().language != crate::i18n::current_language())
+            .build();
+        language.add_suffix(&restart);
+        let weak = Rc::downgrade(self);
+        let restart_button = restart.clone();
+        language.connect_selected_notify(move |row| {
+            let mut settings = prefs::load();
+            let before = settings.language;
+            settings.language = crate::i18n::Language::from_index(row.selected());
+            if settings.language == before { return; }
+            match prefs::save_language(settings.language) {
+                Ok(()) => restart_button.set_sensitive(settings.language != crate::i18n::current_language()),
+                Err(error) => {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.toast(&crate::tr_format!("Could not save language: {error}", "无法保存语言设置：{error}"));
+                    }
+                    // Do not emit another save while restoring the actual selection.
+                    row.set_selected(before.index());
+                }
+            }
+        });
+        let weak = Rc::downgrade(self);
+        restart.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            let result = std::env::current_exe().and_then(|exe| {
+                std::process::Command::new("sh")
+                    .args(["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec \"$0\""])
+                    .arg(exe).arg(std::process::id().to_string())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+            });
+            match result {
+                Ok(_) => { if let Some(app) = ui.window.application() { app.quit(); } }
+                Err(error) => ui.toast(&crate::tr_format!("Could not restart: {error}", "无法重启：{error}")),
+            }
+        });
+        group.add(&language);
         let page = adw::PreferencesPage::new();
         page.add(&group);
         let dialog = adw::PreferencesDialog::new();
@@ -933,12 +1019,12 @@ impl Ui {
     fn set_start_at_login(&self, row: &adw::SwitchRow, on: bool) {
         match lifecycle::set_autostart(on) {
             Ok(()) => self.toast(if on {
-                "Smart Connect will start at login"
+                tr("Smart Connect will start at login")
             } else {
-                "Smart Connect will no longer start at login"
+                tr("Smart Connect will no longer start at login")
             }),
             Err(e) => {
-                self.toast(&format!("Could not change the login setting: {e}"));
+                self.toast(&crate::tr_format!("Could not change the login setting: {e}", "无法更改登录设置：{e}"));
                 // Put the switch back to what's actually on disk.
                 row.set_active(lifecycle::autostart_enabled());
             }
@@ -949,7 +1035,7 @@ impl Ui {
     /// back to the "not running" page after a grace period.
     fn begin_starting(self: &Rc<Self>) {
         self.state.borrow_mut().starting = true;
-        self.connecting_label.set_label("Starting smartconnectd…");
+        self.connecting_label.set_label(tr("Starting smartconnectd…"));
         self.root.set_visible_child_name("connecting");
         self.show_switcher(false);
         self.refresh_device_offline();
@@ -958,7 +1044,7 @@ impl Ui {
         glib::timeout_add_local_once(Duration::from_secs(20), move || {
             let Some(ui) = weak.upgrade() else { return };
             let was_starting = std::mem::take(&mut ui.state.borrow_mut().starting);
-            ui.connecting_label.set_label("Connecting…");
+            ui.connecting_label.set_label(tr("Connecting…"));
             if was_starting && ui.state.borrow().status.is_none() {
                 ui.set_down();
             }
@@ -1038,7 +1124,7 @@ impl Ui {
     fn toast_reply(&self, result: &Result<Reply, String>) {
         match result {
             Ok(r) if !r.message.is_empty() => self.toast(&r.message),
-            Ok(r) => self.toast(if r.ok { "Done" } else { "Failed" }),
+            Ok(r) => self.toast(if r.ok { tr("Done") } else { tr("Failed") }),
             Err(e) => self.toast(e),
         }
     }
@@ -1051,7 +1137,9 @@ impl Ui {
             return;
         }
         self.apps.set_connected(false);
+        self.messages.set_connected(false);
         self.display.set_connected(false);
+        self.desktop.set_connected(false);
         self.cross.set_connected(false);
         self.files.set_connected(false);
         {
@@ -1102,7 +1190,9 @@ impl Ui {
             (st.status.as_ref().is_some_and(|s| s.connected), st.muted.is_some())
         };
         self.apps.set_connected(connected);
+        self.messages.set_connected(connected);
         self.display.set_connected(connected);
+        self.desktop.set_connected(connected);
         self.cross.set_connected(connected);
         self.files.set_connected(connected);
         self.refresh_phone();
@@ -1155,7 +1245,8 @@ impl Ui {
     fn refresh_phone(&self) {
         let mut st = self.state.borrow_mut();
         let busy = st.busy;
-        let pending = st.mirror_pending;
+        let pending = st.mirror_pending || self.apps.view_pending("mirror");
+        let cancelling=st.mirror_cancelling;
         let mirroring = st.mirror.as_ref().is_some_and(Mirror::running) || self.apps.mirror_session().is_some();
         let Some(s) = st.status.clone() else { return };
         let last = st.last.clone();
@@ -1186,16 +1277,16 @@ impl Ui {
         let name = s.name.clone().filter(|n| !n.is_empty()).or_else(|| last.name.clone());
         let model = s.model.clone().filter(|m| !m.is_empty()).or_else(|| last.model.clone());
         let display_name = match state {
-            PhoneState::Unpaired => "No phone paired".to_owned(),
-            _ => name.clone().or_else(|| model.clone()).unwrap_or_else(|| "Phone".to_owned()),
+            PhoneState::Unpaired => tr("No phone paired").to_owned(),
+            _ => name.clone().or_else(|| model.clone()).unwrap_or_else(|| tr("Phone").to_owned()),
         };
         p.name.set_label(&display_name);
         let seen = last.last_seen();
         let line = match state {
-            PhoneState::Connected => "Connected over Wi-Fi".to_owned(),
-            PhoneState::Disconnected if busy => "Connecting…".to_owned(),
-            PhoneState::Disconnected => seen.as_ref().map_or_else(|| "Disconnected".to_owned(), |t| format!("Disconnected · {t}")),
-            PhoneState::Unpaired => "Pair your Motorola phone with Smart Connect to get started".to_owned(),
+            PhoneState::Connected => tr("Connected over Wi-Fi").to_owned(),
+            PhoneState::Disconnected if busy => tr("Connecting…").to_owned(),
+            PhoneState::Disconnected => seen.as_ref().map_or_else(|| tr("Disconnected").to_owned(), |t| crate::tr_format!("Disconnected · {t}", "已断开连接 · {t}")),
+            PhoneState::Unpaired => tr("Pair your Motorola phone with Smart Connect to get started").to_owned(),
         };
         p.subtitle.set_label(&match model.as_deref().filter(|m| state != PhoneState::Unpaired && Some(*m) != name.as_deref()) {
             Some(model) => format!("{model} · {line}"),
@@ -1216,24 +1307,36 @@ impl Ui {
         }
         set_dimmed(&p.stats, state != PhoneState::Connected);
 
-        // Unread shortcut.
+        // The notification shortcut and tab must count the same locally visible entries.
+        let count = {
+            let st = self.state.borrow();
+            visible_notifications(&s.notifications, &st.dismissed).count()
+        };
+        p.notifications_card.set_visible(state == PhoneState::Connected && count > 0);
+        p.notification_count.set_label(&match count {
+            1 => tr("1 notification").to_owned(),
+            n => crate::tr_format!("{n} notifications", "{n} 条通知"),
+        });
+        // Service 100's unread count belongs to SMS/MMS, not forwarded app notifications.
         let unread = s.unread.unwrap_or(0).max(0);
-        p.unread_card.set_visible(state == PhoneState::Connected && unread > 0);
-        p.unread_label.set_label(&match unread {
-            1 => "1 unread message".to_owned(),
-            n => format!("{n} unread messages"),
+        p.sms_unread.set_visible(state == PhoneState::Connected && unread > 0);
+        p.sms_unread.set_label(&match unread {
+            1 => tr("1 unread SMS/MMS message").to_owned(),
+            n => crate::tr_format!("{n} unread SMS/MMS messages", "{n} 条未读短信/彩信"),
         });
 
         // The card's action: Mirror screen (connected, or a mirror still open), Connect (phone
         // away), or Pair a phone (none paired).
         p.mirror.set_visible(state == PhoneState::Connected || mirroring);
-        p.mirror.set_sensitive(!pending && (s.connected || mirroring));
-        p.mirror.set_label(if pending {
-            "Starting…"
+        p.mirror.set_sensitive(!cancelling && (s.connected || mirroring || pending));
+        p.mirror.set_label(if cancelling {
+            tr("Cancelling…")
+        } else if pending && !mirroring {
+            tr("Cancel startup")
         } else if mirroring {
-            "Stop mirroring"
+            tr("Stop mirroring")
         } else {
-            "Mirror screen"
+            tr("Mirror screen")
         });
         if mirroring {
             p.mirror.add_css_class("destructive-action");
@@ -1245,7 +1348,7 @@ impl Ui {
         p.connect.set_visible(state == PhoneState::Disconnected && !mirroring);
         p.connect.set_sensitive(!busy);
         p.connect_spinner.set_visible(busy);
-        p.connect_label.set_label(if busy { "Connecting…" } else { "Connect" });
+        p.connect_label.set_label(if busy { tr("Connecting…") } else { tr("Connect") });
         p.pair.set_visible(state == PhoneState::Unpaired);
 
         // Cross Control stays visible for a paired phone (its page says when to connect).
@@ -1261,9 +1364,9 @@ impl Ui {
                 Some(b) => format!("Wi-Fi · {b}%"),
                 None => "Wi-Fi".to_owned(),
             },
-            PhoneState::Disconnected if busy => "Connecting…".to_owned(),
-            PhoneState::Disconnected => seen.map_or_else(|| "Disconnected".to_owned(), |t| format!("Disconnected · {t}")),
-            PhoneState::Unpaired => "No phone paired".to_owned(),
+            PhoneState::Disconnected if busy => tr("Connecting…").to_owned(),
+            PhoneState::Disconnected => seen.map_or_else(|| tr("Disconnected").to_owned(), |t| crate::tr_format!("Disconnected · {t}", "已断开连接 · {t}")),
+            PhoneState::Unpaired => tr("No phone paired").to_owned(),
         });
         d.check.set_visible(s.connected);
         d.pair.set_sensitive(true);
@@ -1271,11 +1374,11 @@ impl Ui {
         d.connect.set_sensitive(!busy);
         if let Some(label) = d.connect.child().and_downcast::<gtk::Label>() {
             label.set_label(if busy {
-                "Working…"
+                tr("Working…")
             } else if s.connected {
-                "Disconnect"
+                tr("Disconnect")
             } else {
-                "Connect"
+                tr("Connect")
             });
         }
     }
@@ -1283,7 +1386,7 @@ impl Ui {
     /// Fills the inline battery / Wi-Fi / mobile / Bluetooth row from `v`.
     fn fill_stats(&self, v: &LastDevice, live: bool) {
         let p = &self.phone;
-        let pre = if live { "" } else { "Last known · " };
+        let pre = if live { "" } else { tr("Last known · ") };
         match v.battery {
             Some(b) => {
                 let level = (b.clamp(0, 100) + 5) / 10 * 10;
@@ -1294,32 +1397,32 @@ impl Ui {
                     (l, true) => format!("battery-level-{l}-charging-symbolic"),
                     (l, false) => format!("battery-level-{l}-symbolic"),
                 };
-                let tip = format!("{pre}Battery: {b}%{}", if charging { ", charging" } else { "" });
+                let tip = crate::tr_format!("{pre}Battery: {b}%{}", "{pre}电量：{b}%{}", if charging { tr(", charging") } else { "" });
                 p.battery.set(&icon, &format!("{b}%"), &tip);
             }
-            None => p.battery.set("battery-missing-symbolic", "—", &format!("{pre}Battery: unknown")),
+            None => p.battery.set("battery-missing-symbolic", "—", &crate::tr_format!("{pre}Battery: unknown", "{pre}电量：未知")),
         }
         let wifi_word = signal_text(v.wifi_signal);
         match signal_level(v.wifi_signal).filter(|_| v.wifi) {
             Some(l) => p.wifi.set(
                 &format!("network-wireless-signal-{}-symbolic", SIGNAL_ICONS[l]),
                 wifi_word,
-                &format!("{pre}Wi-Fi: {}", wifi_word.to_lowercase()),
+                &crate::tr_format!("{pre}Wi-Fi: {}", "{pre}Wi-Fi：{}", wifi_word.to_lowercase()),
             ),
-            None if v.wifi => p.wifi.set("network-wireless-symbolic", "On", &format!("{pre}Wi-Fi: on")),
-            None => p.wifi.set("network-wireless-offline-symbolic", "Off", &format!("{pre}Wi-Fi: off")),
+            None if v.wifi => p.wifi.set("network-wireless-symbolic", tr("On"), &crate::tr_format!("{pre}Wi-Fi: on", "{pre}Wi-Fi：开启")),
+            None => p.wifi.set("network-wireless-offline-symbolic", tr("Off"), &crate::tr_format!("{pre}Wi-Fi: off", "{pre}Wi-Fi：关闭")),
         }
         let cell_word = signal_text(v.cell_signal);
         let cell_icon = signal_level(v.cell_signal).map_or("none", |l| SIGNAL_ICONS[l]);
         p.cell.set(
             &format!("network-cellular-signal-{cell_icon}-symbolic"),
             cell_word,
-            &format!("{pre}Mobile signal: {}", cell_word.to_lowercase().replace('—', "unknown")),
+            &crate::tr_format!("{pre}Mobile signal: {}", "{pre}移动信号：{}", cell_word.to_lowercase().replace('—', "unknown")),
         );
         if v.bluetooth {
-            p.bluetooth.set("bluetooth-active-symbolic", "On", &format!("{pre}Bluetooth: on"));
+            p.bluetooth.set("bluetooth-active-symbolic", tr("On"), &crate::tr_format!("{pre}Bluetooth: on", "{pre}蓝牙：开启"));
         } else {
-            p.bluetooth.set("bluetooth-disabled-symbolic", "Off", &format!("{pre}Bluetooth: off"));
+            p.bluetooth.set("bluetooth-disabled-symbolic", tr("Off"), &crate::tr_format!("{pre}Bluetooth: off", "{pre}蓝牙：关闭"));
         }
     }
 
@@ -1333,13 +1436,13 @@ impl Ui {
         d.label.set_label(&name);
         d.menu_name.set_label(&name);
         d.dot.set_css_classes(&["dim-label"]);
-        d.menu_sub.set_label(if starting { "Starting the Smart Connect service…" } else { "Smart Connect service isn't running" });
+        d.menu_sub.set_label(if starting { tr("Starting the Smart Connect service…") } else { tr("Smart Connect service isn't running") });
         d.check.set_visible(false);
         d.pair.set_sensitive(false);
         d.connect.set_visible(true);
         d.connect.set_sensitive(!starting);
         if let Some(label) = d.connect.child().and_downcast::<gtk::Label>() {
-            label.set_label(if starting { "Starting…" } else { "Start service" });
+            label.set_label(if starting { tr("Starting…") } else { tr("Start service") });
         }
         d.button.set_visible(st.status.is_some() || st.last.known());
     }
@@ -1349,8 +1452,8 @@ impl Ui {
         let mut st = self.state.borrow_mut();
         let last = st.last.clone();
         self.down.card.set_visible(last.known());
-        self.down.name.set_label(last.name.as_deref().or(last.model.as_deref()).unwrap_or("Your phone"));
-        self.down.sub.set_label(&last.last_seen().map_or_else(|| "Not connected yet".to_owned(), |t| capitalize(&t)));
+        self.down.name.set_label(last.name.as_deref().or(last.model.as_deref()).unwrap_or(tr("Your phone")));
+        self.down.sub.set_label(&last.last_seen().map_or_else(|| tr("Not connected yet").to_owned(), |t| capitalize(&t)));
         let wall = last.wallpaper_path().map(str::to_owned);
         if wall != st.down_wallpaper {
             st.down_wallpaper = wall.clone();
@@ -1375,7 +1478,7 @@ impl Ui {
                 // Say plainly that it failed, with the daemon's reason (e.g. the phone isn't reachable).
                 Ok(r) if !r.ok => {
                     let why = if r.message.is_empty() { "no reason given" } else { r.message.as_str() };
-                    ui.toast(&format!("Couldn't {cmd}: {why}"));
+                    ui.toast(&crate::tr_format!("Couldn't {cmd}: {why}", "无法执行 {cmd}：{why}"));
                 }
                 _ => ui.toast_reply(&result),
             }
@@ -1388,6 +1491,20 @@ impl Ui {
     /// start. (A viewer spawned while a host runs just hands off and exits, which used to look like
     /// a failed/stopped mirror.)
     fn toggle_mirror(self: &Rc<Self>) {
+        if self.state.borrow().mirror_cancelling {return;}
+        if self.state.borrow().mirror_pending || self.apps.view_pending("mirror") {
+            let control={let mut st=self.state.borrow_mut();st.mirror_cancelling=true;st.mirror_start_control.clone()};
+            if let Some(control)=&control {control.cancel();}
+            self.refresh_phone();let weak=Rc::downgrade(self);
+            glib::spawn_future_local(async move {
+                let result=gio::spawn_blocking(move ||apps::cancel_start("mirror",control.as_deref())).await.unwrap_or_else(|_|Err(tr("Could not cancel startup").into()));
+                let Some(ui)=weak.upgrade()else{return;};
+                {let mut st=ui.state.borrow_mut();st.mirror_pending=false;st.mirror_cancelling=false;st.mirror_start_control=None;}
+                if let Err(error)=result {ui.toast(&error);}
+                ui.apps.poll_soon();ui.refresh_phone();
+            });
+            return;
+        }
         if let Some(sid) = self.apps.mirror_session() {
             let weak = Rc::downgrade(self);
             glib::spawn_future_local(async move {
@@ -1412,16 +1529,20 @@ impl Ui {
                 return;
             }
             st.mirror_pending = true;
+            st.mirror_start_control=Some(Default::default());
         }
         self.refresh_phone();
+        let control=self.state.borrow().mirror_start_control.clone().unwrap_or_default();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(apps::start_mirror).await.unwrap_or_else(|_| Err("mirror thread failed".into()));
+            let worker=control.clone();
+            let result = gio::spawn_blocking(move ||apps::start_mirror(&worker)).await.unwrap_or_else(|_| Err("mirror thread failed".into()));
+            if control.cancelled() {return;}
             let Some(ui) = weak.upgrade() else { return };
             ui.state.borrow_mut().mirror_pending = false;
             match result {
                 Ok(_) => {
-                    ui.toast("Mirroring opens in its own window");
+                    ui.toast(tr("Mirroring opens in its own window"));
                     ui.apps.poll_soon();
                 }
                 Err(e) => {
@@ -1487,7 +1608,7 @@ impl Ui {
             let mut st = self.state.borrow_mut();
             let present: HashSet<&String> = raw.iter().map(|n| &n.key).collect();
             st.dismissed.retain(|k| present.contains(k));
-            raw.iter().filter(|n| !st.dismissed.contains(&n.key)).cloned().collect()
+            visible_notifications(&raw, &st.dismissed).cloned().collect()
         };
 
         let count = u32::try_from(notifications.len()).unwrap_or(u32::MAX);
@@ -1542,6 +1663,8 @@ impl Ui {
                 self.notifs.list.append(&st.rows[&n.key].row);
             }
         }
+        drop(st);
+        self.refresh_phone();
     }
 
     fn notification_row(self: &Rc<Self>, n: &Notification) -> NotifRow {
@@ -1554,9 +1677,9 @@ impl Ui {
         name_col.append(&sub);
 
         // ⋯ menu: Open on phone / Dismiss / Mute <app>.
-        let open_item = menu_item("Open on phone");
-        let dismiss_item = menu_item("Dismiss");
-        let mute_item = menu_item("Mute");
+        let open_item = menu_item(tr("Open on phone"));
+        let dismiss_item = menu_item(tr("Dismiss"));
+        let mute_item = menu_item(tr("Mute"));
         let menu_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
         menu_box.append(&open_item);
         menu_box.append(&dismiss_item);
@@ -1580,8 +1703,8 @@ impl Ui {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .build();
-        let entry = gtk::Entry::builder().hexpand(true).placeholder_text("Reply…").build();
-        let send = gtk::Button::builder().icon_name("mail-send-symbolic").tooltip_text("Send reply").css_classes(["suggested-action"]).build();
+        let entry = gtk::Entry::builder().hexpand(true).placeholder_text(tr("Reply…")).build();
+        let send = gtk::Button::builder().icon_name("mail-send-symbolic").tooltip_text(tr("Send reply")).css_classes(["suggested-action"]).build();
         let reply_box = gtk::Box::builder().spacing(6).margin_top(6).css_classes(["linked"]).build();
         reply_box.append(&entry);
         reply_box.append(&send);
@@ -1671,7 +1794,7 @@ impl Ui {
     /// "Open on phone": forward the notification's own click to the phone.
     fn open_on_phone(self: &Rc<Self>, n: &Notification) {
         if !self.state.borrow().status.as_ref().is_some_and(|s| s.connected) {
-            self.toast("The phone is not connected");
+            self.toast(tr("The phone is not connected"));
             return;
         }
         self.command(daemon::notif_open_line(&n.key, n.service), |ui, result| ui.toast_reply(&result));
@@ -1731,7 +1854,7 @@ impl Ui {
                 if let Some(list) = reply.muted() {
                     ui.set_muted_list(list);
                 }
-                ui.toast(&if mute { format!("{name} muted: no more desktop popups from it") } else { format!("{name} unmuted") });
+                ui.toast(&if mute { crate::tr_format!("{name} muted: no more desktop popups from it", "已将 {name} 静音：不再显示其桌面弹窗") } else { crate::tr_format!("{name} unmuted", "已取消 {name} 静音") });
             }
             _ => {
                 ui.toast_reply(&result);
@@ -1757,7 +1880,7 @@ impl Ui {
             if name != *pkg {
                 row.set_subtitle(pkg);
             }
-            let unmute = gtk::Button::builder().label("Unmute").valign(gtk::Align::Center).build();
+            let unmute = gtk::Button::builder().label(tr("Unmute")).valign(gtk::Align::Center).build();
             let weak = Rc::downgrade(self);
             let pkg = pkg.clone();
             unmute.connect_clicked(move |b| {
@@ -1771,8 +1894,8 @@ impl Ui {
             rows.push(row);
         }
         self.notifs.muted.set_subtitle(&match list.len() {
-            1 => "1 app shows no desktop popups".to_owned(),
-            n => format!("{n} apps show no desktop popups"),
+            1 => tr("1 app shows no desktop popups").to_owned(),
+            n => crate::tr_format!("{n} apps show no desktop popups", "{n} 个应用不显示桌面弹窗"),
         });
         self.notifs.muted_group.set_visible(!list.is_empty());
         {
@@ -1829,12 +1952,12 @@ impl Ui {
                 }
                 self.pair.qr_box.set_visible(true);
                 self.pair.spinner.set_visible(true);
-                self.pair.status.set_label("Waiting for phone… the phone connects automatically once pairing finishes.");
+                self.pair.status.set_label(tr("Waiting for phone… the phone connects automatically once pairing finishes."));
             }
             None => {
                 self.pair.qr_box.set_visible(false);
                 self.pair.spinner.set_visible(true);
-                self.pair.status.set_label("Requesting a pairing code…");
+                self.pair.status.set_label(tr("Requesting a pairing code…"));
             }
         }
     }
@@ -1862,10 +1985,164 @@ impl NotifRow {
 
     /// Shows the daemon's mute state on the ⋯ menu item (a click asks for the opposite).
     fn set_muted(&self, muted: bool) {
-        let app = if self.data.app.is_empty() { "this app" } else { self.data.app.as_str() };
+        let app = if self.data.app.is_empty() { tr("this app") } else { self.data.app.as_str() };
         if let Some(label) = self.mute_item.child().and_downcast::<gtk::Label>() {
-            label.set_label(&if muted { format!("Unmute {app}") } else { format!("Mute {app}") });
+            label.set_label(&if muted { crate::tr_format!("Unmute {app}", "取消 {app} 静音") } else { crate::tr_format!("Mute {app}", "将 {app} 静音") });
         }
-        self.menu.set_tooltip_text(Some(if muted { "Muted · more actions" } else { "More actions" }));
+        self.menu.set_tooltip_text(Some(if muted { tr("Muted · more actions") } else { tr("More actions") }));
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a desktop session and an isolated XDG_CONFIG_HOME"]
+    fn sms_count_and_notification_shortcut_use_independent_sources() {
+        adw::init().unwrap();
+        crate::i18n::initialize(crate::i18n::Language::Chinese);
+        let app = adw::Application::builder().application_id("dev.smartconnect.NotificationTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE).build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ui = Ui::new(&app);
+        ui.state.borrow_mut().status = Some(Status { connected:true, paired:true, unread:Some(2), ..Status::default() });
+        // This test never needs to query the real daemon when switching to Notifications.
+        ui.state.borrow_mut().muted_loading = true;
+        ui.refresh_notifications();
+        assert!(ui.notifs.empty.get_visible());
+        assert_eq!(ui.notif_page.badge_number(), 0);
+        assert!(!ui.phone.notifications_card.get_visible(), "SMS must not link to an empty notification page");
+        assert!(ui.phone.sms_unread.get_visible());
+        assert_eq!(ui.phone.sms_unread.text(), "2 条未读短信/彩信（请在手机查看）");
+        let notification = |key: &str| Notification { key:key.into(), app:"Example".into(), title:"Example notification".into(), ..Notification::default() };
+        ui.state.borrow_mut().status.as_mut().unwrap().notifications = vec![notification("first"),notification("second")];
+        ui.refresh_notifications();
+        assert_eq!(ui.phone.notification_count.text(), "2 条通知");
+        assert_eq!(ui.notif_page.badge_number(), 2);
+        assert!(ui.phone.notifications_card.get_visible());
+        ui.phone.notifications_card.emit_clicked();
+        assert_eq!(ui.views.visible_child_name().as_deref(), Some("notifications"));
+        ui.dismiss_notification("first");
+        assert_eq!(ui.phone.notification_count.text(), "1 条通知");
+        assert_eq!(ui.notif_page.badge_number(), 1);
+        ui.clear_all_notifications();
+        assert_eq!(ui.notif_page.badge_number(), 0);
+        assert!(ui.notifs.empty.get_visible());
+        assert!(!ui.phone.notifications_card.get_visible());
+        assert!(ui.phone.sms_unread.get_visible(), "clearing notifications must not clear unread SMS");
+        {
+            let mut state = ui.state.borrow_mut();
+            let status = state.status.as_mut().unwrap();
+            status.unread = Some(0);
+            status.notifications = vec![notification("new")];
+        }
+        ui.refresh_notifications();
+        assert!(ui.phone.notifications_card.get_visible());
+        assert!(!ui.phone.sms_unread.get_visible());
+        assert_eq!(ui.notif_page.badge_number(), 1);
+        ui.window.destroy();
+    }
+
+    #[test]
+    #[ignore = "requires a desktop session and an isolated XDG_CONFIG_HOME"]
+    fn main_window_close_and_reopen_keeps_the_main_loop_responsive() {
+        adw::init().unwrap();
+        let app = adw::Application::builder().application_id("dev.smartconnect.CloseTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE).build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ui = Ui::new(&app);
+        if let Some((tray, _commands)) = tray::Tray::spawn() {
+            *ui.tray.borrow_mut() = Some(tray);
+        }
+        let context = glib::MainContext::default();
+        let pulse = || {
+            let fired = Rc::new(std::cell::Cell::new(false));
+            let signal = fired.clone();
+            glib::timeout_add_local_once(Duration::from_millis(30), move || signal.set(true));
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !fired.get() && std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(fired.get(), "GTK main loop stopped processing events");
+        };
+        for _ in 0..8 {
+            ui.present();
+            pulse();
+            let started = std::time::Instant::now();
+            ui.window.close();
+            assert!(started.elapsed() < Duration::from_secs(2), "closing blocked the GTK thread");
+            assert!(!ui.window.is_visible());
+            pulse();
+        }
+        ui.present();
+        pulse();
+        assert!(ui.window.is_visible(), "window could not be reopened from the tray");
+        ui.tray.borrow_mut().take();
+        ui.window.destroy();
+    }
+
+    fn restart_button(widget: &gtk::Widget) -> Option<gtk::Button> {
+        if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+            if button.label().as_deref() == Some(tr("Restart to apply")) {
+                return Some(button.clone());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(button) = restart_button(&widget) { return Some(button); }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    fn find_combo(widget: &gtk::Widget, title: &str) -> Option<adw::ComboRow> {
+        if let Some(row) = widget.downcast_ref::<adw::ComboRow>() {
+            if row.title() == title {
+                return Some(row.clone());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(row) = find_combo(&widget, title) { return Some(row); }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    #[test]
+    #[ignore = "requires a desktop session and an isolated XDG_CONFIG_HOME"]
+    fn language_controls_save_and_reopen_in_both_languages() {
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("dev.smartconnect.LanguageTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        for language in [crate::i18n::Language::Chinese, crate::i18n::Language::English,crate::i18n::Language::French,crate::i18n::Language::Spanish] {
+            crate::i18n::initialize(language);
+            let ui = Ui::new(&app);
+            let phone = ui.views.child_by_name("phone").unwrap();
+            assert_eq!(ui.views.page(&phone).title().as_deref(), Some(tr("Phone")));
+            ui.open_preferences();
+            let dialog = ui.window.visible_dialog().unwrap();
+            let row = find_combo(dialog.upcast_ref(), tr("Language")).expect("language selector missing from Preferences");
+            // Choose a different language, then ensure later display changes cannot overwrite it.
+            let choice = if row.selected() == 1 { 2 } else { 1 };
+            row.set_selected(choice);
+            let expected = crate::i18n::Language::from_index(choice);
+            assert_eq!(prefs::load().language, expected);
+            let display = ui.views.child_by_name("display").unwrap();
+            let fps = find_combo(&display, tr("Frame rate")).unwrap();
+            fps.set_selected(if fps.selected() == 0 { 1 } else { 0 });
+            assert_eq!(prefs::load().language, expected);
+            dialog.force_close();
+            ui.open_preferences();
+            let reopened = ui.window.visible_dialog().unwrap();
+            assert_eq!(restart_button(reopened.upcast_ref()).unwrap().is_sensitive(), expected != language);
+            reopened.force_close();
+            ui.window.destroy();
+        }
     }
 }

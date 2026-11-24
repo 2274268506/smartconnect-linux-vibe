@@ -5,7 +5,40 @@
 //! `async_channel`; the GTK main loop drains it (see `window::Ui::listen_tray`). The icon and the
 //! Connect/Disconnect menu entries are refreshed from the GTK side through [`Tray::set`].
 
+use crate::i18n::tr;
+
 use ksni::blocking::{Handle, TrayMethods};
+use std::cell::Cell;
+use std::sync::{mpsc, Arc, Mutex};
+
+/// Keep only the newest pending update. Neither the producer nor its mutex waits for D-Bus.
+struct LatestUpdate<T> {
+    pending: Arc<Mutex<Option<T>>>,
+    wake: mpsc::SyncSender<()>,
+}
+
+impl<T: Send + 'static> LatestUpdate<T> {
+    fn new(mut apply: impl FnMut(T) + Send + 'static) -> Self {
+        let pending = Arc::new(Mutex::new(None));
+        let (wake, receiver) = mpsc::sync_channel(1);
+        let next = pending.clone();
+        std::thread::spawn(move || {
+            while receiver.recv().is_ok() {
+                // Release the mutex before invoking a potentially blocking service update.
+                let update = next.lock().unwrap().take();
+                if let Some(update) = update {
+                    apply(update);
+                }
+            }
+        });
+        Self { pending, wake }
+    }
+
+    fn set(&self, value: T) {
+        *self.pending.lock().unwrap() = Some(value);
+        let _ = self.wake.try_send(());
+    }
+}
 
 /// What a tray menu entry (or a left click) asks the window to do, handled on the GTK main loop.
 #[derive(Clone, Copy, Debug)]
@@ -75,10 +108,10 @@ impl ksni::Tray for Item {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         let description = match self.state {
-            State::DaemonDown => "Daemon not running",
-            State::Starting => "Starting…",
-            State::Disconnected => "Phone disconnected",
-            State::Connected => "Phone connected",
+            State::DaemonDown => tr("Daemon not running"),
+            State::Starting => tr("Starting…"),
+            State::Disconnected => tr("Phone disconnected"),
+            State::Connected => tr("Phone connected"),
         };
         ksni::ToolTip {
             icon_name: self.icon_name(),
@@ -97,21 +130,25 @@ impl ksni::Tray for Item {
         use ksni::menu::{MenuItem, StandardItem};
         vec![
             StandardItem {
-                label: if self.window_visible { "Hide Window".into() } else { "Show Window".into() },
+                label: if self.window_visible {
+                    tr("Hide Window").into()
+                } else {
+                    tr("Show Window").into()
+                },
                 activate: Box::new(|this: &mut Self| this.send(Command::ToggleWindow)),
                 ..Default::default()
             }
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Connect".into(),
+                label: tr("Connect").into(),
                 enabled: matches!(self.state, State::Disconnected),
                 activate: Box::new(|this: &mut Self| this.send(Command::Connect)),
                 ..Default::default()
             }
             .into(),
             StandardItem {
-                label: "Disconnect".into(),
+                label: tr("Disconnect").into(),
                 enabled: matches!(self.state, State::Connected),
                 activate: Box::new(|this: &mut Self| this.send(Command::Disconnect)),
                 ..Default::default()
@@ -119,7 +156,7 @@ impl ksni::Tray for Item {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Quit".into(),
+                label: tr("Quit").into(),
                 icon_name: "application-exit-symbolic".into(),
                 activate: Box::new(|this: &mut Self| this.send(Command::Quit)),
                 ..Default::default()
@@ -132,6 +169,8 @@ impl ksni::Tray for Item {
 /// A spawned tray item. Dropping it tears the tray down.
 pub struct Tray {
     handle: Handle<Item>,
+    updates: LatestUpdate<(State, bool)>,
+    last: Cell<Option<(State, bool)>>,
 }
 
 impl Tray {
@@ -139,9 +178,29 @@ impl Tray {
     /// `None` when the desktop has no StatusNotifierHost (then the app just runs without a tray).
     pub fn spawn() -> Option<(Tray, async_channel::Receiver<Command>)> {
         let (tx, rx) = async_channel::unbounded();
-        let item = Item { state: State::Starting, window_visible: true, tx };
+        let item = Item {
+            state: State::Starting,
+            window_visible: true,
+            tx,
+        };
         match item.spawn() {
-            Ok(handle) => Some((Tray { handle }, rx)),
+            Ok(handle) => {
+                let service = handle.clone();
+                let updates = LatestUpdate::new(move |(state, window_visible)| {
+                    service.update(|item| {
+                        item.state = state;
+                        item.window_visible = window_visible;
+                    });
+                });
+                Some((
+                    Tray {
+                        handle,
+                        updates,
+                        last: Cell::new(None),
+                    },
+                    rx,
+                ))
+            }
             Err(e) => {
                 eprintln!("smartconnect-gui: system tray unavailable: {e}");
                 None
@@ -152,9 +211,51 @@ impl Tray {
     /// Pushes the current connection state and window visibility to the tray (icon, tooltip and the
     /// enabled state of Connect/Disconnect, Show/Hide label).
     pub fn set(&self, state: State, window_visible: bool) {
-        self.handle.update(|item| {
-            item.state = state;
-            item.window_visible = window_visible;
+        let update = (state, window_visible);
+        if self.last.replace(Some(update)) != Some(update) {
+            self.updates.set(update);
+        }
+    }
+}
+
+impl Drop for Tray {
+    fn drop(&mut self) {
+        // Enqueue shutdown, but never wait for D-Bus or join the update worker on the GTK thread.
+        let _ = self.handle.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn busy_tray_does_not_block_updates_and_latest_visibility_wins() {
+        let (entered, ready) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let (applied, updates) = mpsc::channel();
+        let queue = LatestUpdate::new(move |value| {
+            if value == (State::Connected, true) {
+                entered.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            applied.send(value).unwrap();
         });
+        queue.set((State::Connected, true));
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        // The service is deliberately stuck; posts must finish before it is allowed to resume.
+        queue.set((State::Disconnected, true));
+        queue.set((State::Connected, false));
+        release.send(()).unwrap();
+        assert_eq!(
+            updates.recv_timeout(Duration::from_secs(2)).unwrap(),
+            (State::Connected, true)
+        );
+        assert_eq!(
+            updates.recv_timeout(Duration::from_secs(2)).unwrap(),
+            (State::Connected, false)
+        );
+        assert!(updates.try_recv().is_err());
     }
 }

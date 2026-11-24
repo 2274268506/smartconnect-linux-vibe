@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast::error::RecvError;
@@ -172,9 +172,9 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
         }
         // {"cmd":"sms_threads"}: (re)sync SMS from the phone; returns the cached conversation list.
         "sms_threads" => {
-            crate::sms::request_sync(daemon);
+            if v.get("refresh").and_then(serde_json::Value::as_bool).unwrap_or(true) {crate::sms::request_sync(daemon);}
             let st = crate::sms::store().lock().unwrap();
-            json!({ "ok": true, "enabled": st.enabled(), "threads": st.threads() }).to_string()
+            json!({ "ok": true, "enabled": st.enabled(), "threads": st.threads(), "cacheOnlySupported":true }).to_string()
         }
         // {"cmd":"sms_thread","thread":"<address or thread key>"}: cached messages, oldest first.
         "sms_thread" => {
@@ -182,9 +182,9 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             if key.is_empty() {
                 return json!({ "ok": false, "message": "sms_thread needs thread" }).to_string();
             }
-            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::request_messages(crate::sms::KIND_SMS)));
+            if v.get("refresh").and_then(serde_json::Value::as_bool).unwrap_or(true) {let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::request_messages(crate::sms::KIND_SMS)));}
             let st = crate::sms::store().lock().unwrap();
-            json!({ "ok": true, "thread": crate::sms::thread_key(key), "messages": st.thread(key) }).to_string()
+            json!({ "ok": true, "thread": crate::sms::thread_key(key), "messages": st.thread(key), "cacheOnlySupported":true }).to_string()
         }
         // {"cmd":"sms_send","number":"+91…"|"thread":"<key>","text":"…"}
         "sms_send" => {
@@ -208,7 +208,9 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             let Some(id) = v.get("id").and_then(serde_json::Value::as_i64) else {
                 return json!({ "ok": false, "message": "sms_mark_read needs id" }).to_string();
             };
-            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::mark_read(id, crate::sms::KIND_SMS, true)));
+            let kind=v.get("kind").and_then(Value::as_i64).unwrap_or(crate::sms::KIND_SMS);
+            if !matches!(kind,1|2){return json!({"ok":false,"message":"kind must be SMS (1) or MMS (2)"}).to_string();}
+            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::mark_read(id, kind, true)));
             json!({ "ok": true, "message": "sent" }).to_string()
         }
         other => json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string(),

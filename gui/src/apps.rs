@@ -7,6 +7,8 @@
 //! (`$XDG_RUNTIME_DIR/smartconnect-mirror.sock`) directly; the host is started detached when it
 //! is not running yet.
 
+use crate::i18n::tr;
+
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -68,6 +70,19 @@ pub struct Session {
     pub pkg: String,
     pub display_id: Option<i64>,
     pub title: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub requested_width: Option<u32>,
+    pub requested_height: Option<u32>,
+    pub borderless: Option<bool>,
+    pub requested_scale: Option<u32>,
+    pub density: Option<u32>,
+    pub requested_density: Option<u32>,
+    pub requested_quality: crate::stream_settings::Quality,
+    pub renderer: crate::desktop_renderer::Renderer,
+    pub fullscreen:bool,
+    pub scrcpy_state: Option<String>,
+    pub requested_scrcpy: crate::desktop_renderer::ScrcpyOptions,
 }
 
 fn runtime_dir() -> PathBuf {
@@ -119,7 +134,7 @@ fn ensure_host() -> Result<(), String> {
         .stderr(err)
         .process_group(0) // survives the GUI and its Ctrl+C
         .spawn()
-        .map_err(|e| format!("Could not start {}: {e}", bin.display()))?;
+        .map_err(|e| crate::tr_format!("Could not start {}: {e}", "无法启动 {}：{e}", bin.display()))?;
     let deadline = Instant::now() + HOST_START;
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
@@ -133,7 +148,7 @@ fn ensure_host() -> Result<(), String> {
             if host_running() {
                 return Ok(());
             }
-            return Err(format!("The stream host exited ({status}); see {}", cache_dir().join("mirror-host.log").display()));
+            return Err(crate::tr_format!("The stream host exited ({status}); see {}", "串流服务已退出（{status}）；请查看 {}", cache_dir().join("mirror-host.log").display()));
         }
     }
     std::thread::spawn(move || child.wait());
@@ -146,36 +161,171 @@ fn reply_result(reply: Option<Value>) -> Result<String, String> {
     if r.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(msg)
     } else {
-        Err(if msg.is_empty() { "The stream host refused the request".into() } else { msg })
+        Err(if msg.is_empty() { tr("The stream host refused the request").into() } else { tr(&msg).to_owned() })
     }
 }
 
-fn launch(pkg: &str, cmp: Option<&str>) -> Result<String, String> {
+/// Serializes cancelling a start with its socket request, so cancelling during host
+/// startup cannot race a late request and reopen a window.
+#[derive(Default)]
+pub struct StartControl {
+    cancelled: std::sync::atomic::AtomicBool,
+    gate: std::sync::Mutex<()>,
+}
+impl StartControl {
+    pub fn cancel(&self) { self.cancelled.store(true,std::sync::atomic::Ordering::Release); }
+    pub fn cancelled(&self)->bool { self.cancelled.load(std::sync::atomic::Ordering::Acquire) }
+}
+pub fn cancel_start(pkg: &str, control: Option<&StartControl>) -> Result<String,String> {
+    let _guard=control.map(|c|c.gate.lock().unwrap());
+    if !host_running() {return Ok(String::new());}
+    if host_call(&json!({"cmd":"capabilities"})).is_none_or(|c|c["cancelStart"]!=true) {
+        return Err(tr("Update or restart the stream host to cancel startup").into());
+    }
+    reply_result(host_call(&json!({"cmd":"cancel","pkg":pkg})))
+}
+
+fn launch(pkg: &str, cmp: Option<&str>, settings: prefs::AppStreamingPrefs, control: &StartControl) -> Result<String, String> {
+    let _guard=control.gate.lock().unwrap();
+    if control.cancelled() {return Ok(String::new());}
     ensure_host()?;
-    let mut req = json!({ "cmd": "app", "pkg": pkg });
+    if settings.custom {
+        if !settings.display.valid() {return Err(tr("Invalid app resolution").into());}
+        let capabilities=host_call(&json!({"cmd":"capabilities"}));
+        if capabilities.as_ref().is_none_or(|value|value["appResolution"]!=true) {
+            return Err(tr("Update or restart the stream host to configure app resolution").into());
+        }
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.fold_mouse && host_call(&json!({"cmd":"capabilities"})).is_none_or(|c|c["foldMouse"]!=true) {
+        return Err(tr("Update or restart the stream host for fold-compatible mouse input").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.audio && settings.scrcpy.independent_audio && host_call(&json!({"cmd":"capabilities"})).is_none_or(|c|c["independentAudio"]!=true) {
+        return Err(tr("Update or restart the stream host for independent audio").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.audio && host_call(&json!({"cmd":"capabilities"})).is_none_or(|c|c["scrcpyAudio"]!=true) {
+        return Err(tr("Update or restart the stream host to play phone audio").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.computer_ime && host_call(&json!({"cmd":"capabilities"})).is_none_or(|c|c["computerIme"]!=true) {
+        return Err(tr("Update or restart an SDL3-enabled stream host to use the computer input method").into());
+    }
+    if settings.scrcpy.wake_unlock && host_call(&json!({"cmd":"capabilities"})).is_none_or(|caps|caps["adbWakeUnlock"]!=true) {
+        return Err(tr("Update or restart the stream host to wake the phone before starting").into());
+    }
+    if settings.quality.custom() && host_call(&json!({"cmd":"capabilities"})).is_none_or(|caps|caps["streamQuality"]!=true) {
+        return Err(tr("Update or restart the stream host to configure stream quality").into());
+    }
+    if settings.layout.fixed && host_call(&json!({"cmd":"capabilities"})).is_none_or(|caps|caps["appLayout"]!=true) {
+        return Err(tr("Fixed app aspect ratio needs the default XWayland renderer").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && host_call(&json!({"cmd":"capabilities"})).is_none_or(|caps|caps["appScrcpy"]!=true){
+        return Err(tr("Update or restart the stream host to use scrcpy app streaming").into());
+    }
+    let mut req = json!({ "cmd": "app", "pkg": pkg, "quality":settings.quality,"layout":settings.layout,"renderer":settings.renderer,"scrcpy":settings.scrcpy });
     if let Some(cmp) = cmp {
         req["cmp"] = json!(cmp);
     }
+    if let Some(display)=settings.requested() {
+        req["width"]=json!(display.width);req["height"]=json!(display.height);req["density"]=json!(display.density);
+    }
+    if control.cancelled() {return Ok(String::new());}
     reply_result(host_call(&req))
 }
 
 /// Whole-screen mirror through the host (which owns the mirror session while it runs).
-pub fn start_mirror() -> Result<String, String> {
+pub fn start_mirror(control: &StartControl) -> Result<String, String> {
+    let _guard=control.gate.lock().unwrap();
+    if control.cancelled() {return Ok(String::new());}
     ensure_host()?;
+    if control.cancelled() {return Ok(String::new());}
     reply_result(host_call(&json!({ "cmd": "mirror" })))
+}
+
+pub fn desktop_session() -> Result<Option<Session>, String> { desktop_status().map(|(session,_)|session) }
+
+pub fn desktop_status() -> Result<(Option<Session>,bool),String> {
+    if !host_running(){return Ok((None,false));}
+    let result=host_call(&json!({"cmd":"sessions"})).ok_or_else(||tr("The stream host did not answer").to_owned())?;
+    if result["ok"]!=true{return Err(tr("Could not query desktop mode").into());}
+    let sessions:Vec<Session>=serde_json::from_value(result["sessions"].clone()).map_err(|_|tr("Could not query desktop mode").to_owned())?;
+    let session=sessions.into_iter().find(|s|s.pkg=="desktop");
+    if session.is_none(){if let Some(error)=result["desktopError"].as_str(){return Err(tr(if error.starts_with("scrcpy exited unexpectedly"){"scrcpy exited unexpectedly; see mirroring logs"}else{error}).into());}}
+    Ok((session,result["desktopPending"].as_bool().unwrap_or(false)))
+}
+
+/// Close only the desktop view when applying a new size; never close unrelated phone apps.
+pub fn start_desktop(settings: prefs::DesktopPrefs, restart: bool, control: &StartControl) -> Result<String, String> {
+    let _guard=control.gate.lock().unwrap();
+    if control.cancelled() {return Ok(String::new());}
+    if !settings.valid() { return Err(tr("Invalid desktop resolution").into()); }
+    ensure_host()?;
+    let capabilities = host_call(&json!({ "cmd": "capabilities" }));
+    if capabilities.as_ref().is_none_or(|caps| caps["desktopResolution"] != true) {
+        return Err(tr("Update or restart the stream host to configure desktop resolution").into());
+    }
+    if capabilities.as_ref().is_none_or(|caps| caps["desktopScaling"] != true) {
+        return Err(tr("Update or restart the stream host to configure app scaling").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Builtin && settings.borderless && capabilities.as_ref().is_none_or(|caps| caps["desktopBorderless"] != true) {
+        return Err(tr("Borderless mode needs the default window renderer. Restart the stream host if it was updated.").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.fold_mouse && capabilities.as_ref().is_none_or(|c|c["foldMouse"]!=true) {
+        return Err(tr("Update or restart the stream host for fold-compatible mouse input").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.audio && settings.scrcpy.independent_audio && capabilities.as_ref().is_none_or(|c|c["independentAudio"]!=true) {
+        return Err(tr("Update or restart the stream host for independent audio").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.audio && capabilities.as_ref().is_none_or(|c|c["scrcpyAudio"]!=true) {
+        return Err(tr("Update or restart the stream host to play phone audio").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.scrcpy.computer_ime && capabilities.as_ref().is_none_or(|c|c["computerIme"]!=true) {
+        return Err(tr("Update or restart an SDL3-enabled stream host to use the computer input method").into());
+    }
+    if settings.scrcpy.wake_unlock && capabilities.as_ref().is_none_or(|caps|caps["adbWakeUnlock"]!=true) {
+        return Err(tr("Update or restart the stream host to wake the phone before starting").into());
+    }
+    if settings.quality.custom() && capabilities.as_ref().is_none_or(|caps|caps["streamQuality"]!=true) {
+        return Err(tr("Update or restart the stream host to configure stream quality").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && capabilities.as_ref().is_none_or(|caps|caps["desktopScrcpy"]!=true){
+        return Err(tr("Update or restart the stream host to use scrcpy desktop mode").into());
+    }
+    if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && settings.follow_computer && capabilities.as_ref().is_none_or(|caps|caps["scrcpyFullscreen"]!=true){
+        return Err(tr("Update or restart the stream host to fill the screen with scrcpy").into());
+    }
+    if restart {
+        if let Some(session) = desktop_session()? {
+            close(session.session_id)?;
+            let deadline = Instant::now() + Duration::from_secs(6);
+            while desktop_session()?.is_some() {
+                if Instant::now() >= deadline { return Err(tr("The desktop session did not stop in time").into()); }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            // Let the phone release its virtual display and encoder before starting another view.
+            std::thread::sleep(Duration::from_millis(750));
+        }
+    }
+    if control.cancelled() {return Ok(String::new());}
+    reply_result(host_call(&json!({ "cmd": "desktop", "width": settings.width, "height": settings.height,
+        "borderless": settings.borderless, "scale": settings.scale_percent.unwrap_or(100),"quality":settings.quality,"renderer":settings.renderer,"scrcpy":settings.scrcpy,"fullscreen":settings.follow_computer&&settings.renderer==crate::desktop_renderer::Renderer::Scrcpy })))
+}
+
+pub fn set_desktop_borderless(borderless: bool) -> Result<String, String> {
+    let caps = host_call(&json!({"cmd":"capabilities"}));
+    if caps.as_ref().is_none_or(|caps| caps.get("desktopBorderless").is_none()) {
+        return Err(tr("Update or restart the stream host to configure desktop windows").into());
+    }
+    reply_result(host_call(&json!({"cmd":"desktop_window","borderless":borderless})))
 }
 
 pub fn close(sid: i64) -> Result<String, String> {
     reply_result(host_call(&json!({ "cmd": "close", "sessionId": sid })))
 }
 
-/// Open sessions; empty when no host runs.
-fn sessions() -> Vec<Session> {
-    host_call(&json!({ "cmd": "sessions" }))
-        .and_then(|r| r.get("sessions").cloned())
-        .and_then(|s| serde_json::from_value(s).ok())
-        .unwrap_or_default()
+fn session_report()->(Vec<Session>,std::collections::HashMap<String,String>,Vec<String>) {
+    let Some(r)=host_call(&json!({"cmd":"sessions"}))else{return (Vec::new(),Default::default(),Vec::new());};
+    (serde_json::from_value(r["sessions"].clone()).unwrap_or_default(),serde_json::from_value(r["appErrors"].clone()).unwrap_or_default(),serde_json::from_value(r["pending"].clone()).unwrap_or_default())
 }
+
 
 fn parse_apps(text: &str) -> Option<Vec<App>> {
     let mut apps: Vec<App> = serde_json::from_str(text.trim()).ok()?;
@@ -201,7 +351,7 @@ fn fetch_apps() -> Result<Vec<App>, String> {
         .args(["--list-apps", "--json"])
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("Could not run {}: {e}", bin.display()))?;
+        .map_err(|e| crate::tr_format!("Could not run {}: {e}", "无法运行 {}：{e}", bin.display()))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("could not get the app list");
@@ -236,6 +386,11 @@ pub struct AppsPage {
     flow: gtk::FlowBox,
     state: RefCell<AppsState>,
     polling: Cell<bool>,
+    app_errors: RefCell<std::collections::HashMap<String,String>>,
+    preparing: RefCell<std::collections::HashMap<String, PendingApp>>,
+    pending_rows: RefCell<Vec<adw::ActionRow>>,
+    host_pending: RefCell<Vec<String>>,
+    request_generation: Cell<u64>,
     on_sessions: RefCell<Option<Box<dyn Fn()>>>,
     /// Watches the icon cache dir so icons written by the stream host / icon download show up.
     _icon_monitor: Option<gio::FileMonitor>,
@@ -266,21 +421,67 @@ struct AppsState {
     connected: bool,
 }
 
+struct PendingApp {
+    control: std::sync::Arc<StartControl>,
+    requesting: bool,
+    cancelling: bool,
+}
+
 impl AppsPage {
+    pub fn view_pending(&self,pkg:&str)->bool { self.host_pending.borrow().iter().any(|p|p==pkg) }
+
+    fn rebuild_pending(self: &Rc<Self>) {
+        for row in self.pending_rows.borrow_mut().drain(..) { self.running.remove(&row); }
+        let pending=self.preparing.borrow();
+        let sessions=self.state.borrow();
+        for (pkg,start) in pending.iter() {
+            if sessions.sessions.iter().any(|s|s.pkg==*pkg) {continue;}
+            let title=sessions.apps.iter().find(|a|a.pkg==*pkg).map(|a|a.name.as_str()).unwrap_or(pkg);
+            let row=adw::ActionRow::builder().title(title).subtitle(tr(if start.cancelling {"Cancelling…"}else{"Preparing connection…"})).use_markup(false).build();
+            let cancel=gtk::Button::builder().label(tr("Cancel")).valign(gtk::Align::Center).sensitive(!start.cancelling).build();
+            let weak=Rc::downgrade(self);let pkg=pkg.clone();
+            cancel.connect_clicked(move |_|{if let Some(page)=weak.upgrade(){page.cancel_app(&pkg);}});
+            row.add_suffix(&cancel);self.running.add(&row);self.pending_rows.borrow_mut().push(row);
+        }
+        self.running.set_visible(!sessions.sessions.is_empty() || !self.pending_rows.borrow().is_empty());
+    }
+
+    fn cancel_app(self:&Rc<Self>,pkg:&str) {
+        self.request_generation.set(self.request_generation.get()+1);
+        let control={
+            let mut pending=self.preparing.borrow_mut();
+            let start=pending.entry(pkg.into()).or_insert_with(||PendingApp{control:Default::default(),requesting:false,cancelling:false});
+            if start.cancelling {return;}
+            start.cancelling=true;start.control.cancel();start.control.clone()
+        };
+        self.rebuild_pending();
+        let pkg=pkg.to_owned();let weak=Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let target=pkg.clone();
+            let result=gio::spawn_blocking(move ||cancel_start(&target,Some(&control))).await.unwrap_or_else(|_|Err(tr("Could not cancel startup").into()));
+            let Some(page)=weak.upgrade()else{return;};
+            page.preparing.borrow_mut().remove(&pkg);
+            if let Err(error)=result {page.toast(&error);}
+            page.rebuild_pending();page.poll_soon();
+        });
+    }
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
-        let search = gtk::SearchEntry::builder().hexpand(true).placeholder_text("Search apps").build();
-        let refresh = gtk::Button::builder().label("Refresh").tooltip_text("Reload the app list from the phone").valign(gtk::Align::Center).build();
+        let search = gtk::SearchEntry::builder().hexpand(true).placeholder_text(tr("Search apps")).build();
+        let refresh = gtk::Button::builder().label(tr("Refresh")).tooltip_text(tr("Reload the app list from the phone")).valign(gtk::Align::Center).build();
         let spinner = adw::Spinner::builder().visible(false).build();
         let bar = gtk::Box::builder().spacing(8).build();
         bar.append(&search);
         bar.append(&spinner);
         bar.append(&refresh);
+        let settings_button=gtk::Button::from_icon_name("preferences-system-symbolic");
+        settings_button.set_tooltip_text(Some(tr("App streaming settings")));
+        bar.append(&settings_button);
         // The search bar stays a sensible width even on a wide window; the grid below fills it.
         let bar_clamp = adw::Clamp::builder().maximum_size(760).tightening_threshold(760).child(&bar).build();
 
         let running = adw::PreferencesGroup::builder()
-            .title("Running")
-            .description("Phone apps open in their own windows")
+            .title(tr("Running"))
+            .description(tr("Phone apps open in their own windows"))
             .visible(false)
             .build();
 
@@ -294,7 +495,7 @@ impl AppsPage {
             .row_spacing(8)
             .build();
         let recent_group = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).visible(false).build();
-        recent_group.append(&gtk::Label::builder().label("Recent").xalign(0.0).css_classes(["heading"]).build());
+        recent_group.append(&gtk::Label::builder().label(tr("Recent")).xalign(0.0).css_classes(["heading"]).build());
         recent_group.append(&recent_flow);
 
         // All apps: an icon grid that adds columns as the window widens (fills the full width).
@@ -308,7 +509,7 @@ impl AppsPage {
             .hexpand(true)
             .build();
         let all_group = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
-        all_group.append(&gtk::Label::builder().label("All apps").xalign(0.0).css_classes(["heading"]).build());
+        all_group.append(&gtk::Label::builder().label(tr("All apps")).xalign(0.0).css_classes(["heading"]).build());
         all_group.append(&flow);
 
         let column = gtk::Box::builder()
@@ -328,11 +529,14 @@ impl AppsPage {
 
         let empty = adw::StatusPage::builder()
             .icon_name("view-app-grid-symbolic")
-            .title("No App List Yet")
-            .description("Connect the phone, then load its apps to open them in their own windows.")
+            .title(tr("No App List Yet"))
+            .description(tr("Connect the phone, then load its apps to open them in their own windows."))
             .build();
-        let load = gtk::Button::builder().label("Load Apps").css_classes(["pill", "suggested-action"]).halign(gtk::Align::Center).build();
-        empty.set_child(Some(&load));
+        let load = gtk::Button::builder().label(tr("Load Apps")).css_classes(["pill", "suggested-action"]).halign(gtk::Align::Center).build();
+        let empty_settings=gtk::Button::with_label(tr("App streaming settings"));
+        let empty_buttons=gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).halign(gtk::Align::Center).build();
+        empty_buttons.append(&load);empty_buttons.append(&empty_settings);
+        empty.set_child(Some(&empty_buttons));
         let stack = gtk::Stack::new();
         stack.add_named(&empty, Some("empty"));
         stack.add_named(&scroller, Some("list"));
@@ -355,6 +559,11 @@ impl AppsPage {
             flow,
             state: RefCell::new(AppsState { recent: prefs::load().apps.recent, ..AppsState::default() }),
             polling: Cell::new(false),
+            app_errors: RefCell::new(Default::default()),
+            preparing: RefCell::new(Default::default()),
+            pending_rows: RefCell::new(Vec::new()),
+            host_pending: RefCell::new(Vec::new()),
+            request_generation: Cell::new(0),
             on_sessions: RefCell::default(),
             _icon_monitor: icon_monitor,
             icon_rescan: Cell::new(false),
@@ -384,6 +593,9 @@ impl AppsPage {
             });
         }
 
+        for button in [&settings_button,&empty_settings] {
+            button.connect_clicked(|button| { crate::app_resolution::show(button); });
+        }
         page.set_apps(cached_apps());
         page.start_polling();
         (page, stack.upcast())
@@ -467,18 +679,18 @@ impl AppsPage {
         self.spinner.set_visible(st.fetching);
         self.stack.set_visible_child_name(if st.apps.is_empty() { "empty" } else { "list" });
         self.search.set_placeholder_text(Some(&match st.apps.len() {
-            0 => "Search apps".to_owned(),
-            n => format!("Search {n} apps"),
+            0 => tr("Search apps").to_owned(),
+            n => crate::tr_format!("Search {n} apps", "搜索 {n} 个应用"),
         }));
         if let Some(load) = self.empty.child() {
             load.set_sensitive(st.connected && !st.fetching);
         }
         self.empty.set_description(Some(if st.fetching {
-            "Asking the phone for its apps…"
+            tr("Asking the phone for its apps…")
         } else if st.connected {
-            "Load the phone's apps to open them in their own windows."
+            tr("Load the phone's apps to open them in their own windows.")
         } else {
-            "Connect the phone, then load its apps to open them in their own windows."
+            tr("Connect the phone, then load its apps to open them in their own windows.")
         }));
     }
 
@@ -631,25 +843,43 @@ impl AppsPage {
 
     fn launch(self: &Rc<Self>, app: &App, button: &gtk::Button) {
         if !self.state.borrow().connected {
-            self.toast("The phone is not connected");
+            self.toast(tr("The phone is not connected"));
             return;
         }
+        if self.preparing.borrow().contains_key(&app.pkg) {return;}
         self.remember_recent(&app.pkg);
         button.set_sensitive(false);
-        self.toast(&format!("Opening {}…", app.name));
+        self.toast(&crate::tr_format!("Opening {}…", "正在打开 {}…", app.name));
         let (pkg, cmp, name) = (app.pkg.clone(), app.cmp.clone(), app.name.clone());
+        let mut settings=prefs::load().apps.streaming.sanitized();
+        if settings.layout.fixed && settings.layout.fit!=crate::stream_settings::FitAxis::Manual {
+            let Some(size)=crate::mobile_desktop::native_monitor_size(button).and_then(|screen|settings.layout.fitted(screen)) else {
+                self.toast(tr("Could not determine the monitor's physical resolution"));button.set_sensitive(true);return;
+            };
+            settings.display.width=size.0;settings.display.height=size.1;
+            if !settings.valid(){self.toast(tr("Calculated 1:1 resolution exceeds the phone's supported size. Choose another ratio or axis."));button.set_sensitive(true);return;}
+        }
+        self.request_generation.set(self.request_generation.get()+1);
+        let control=std::sync::Arc::new(StartControl::default());
+        self.preparing.borrow_mut().insert(pkg.clone(),PendingApp{control:control.clone(),requesting:true,cancelling:false});
+        self.rebuild_pending();
         let weak = Rc::downgrade(self);
         let button = button.downgrade();
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(move || launch(&pkg, cmp.as_deref()))
+            let target=pkg.clone();let worker_control=control.clone();
+            let result = gio::spawn_blocking(move || launch(&target, cmp.as_deref(),settings,&worker_control))
                 .await
                 .unwrap_or_else(|_| Err("launch thread failed".into()));
             if let Some(b) = button.upgrade() {
                 b.set_sensitive(true);
             }
             let Some(p) = weak.upgrade() else { return };
+            if control.cancelled() {return;}
+            if let Some(pending)=p.preparing.borrow_mut().get_mut(&pkg) {pending.requesting=false;}
+            if result.is_err() {p.preparing.borrow_mut().remove(&pkg);}
+            p.rebuild_pending();
             if let Err(e) = result {
-                p.toast(&format!("Could not open {name}: {e}"));
+                p.toast(&crate::tr_format!("Could not open {name}: {e}", "无法打开 {name}：{e}"));
             }
             p.poll_soon();
         });
@@ -697,10 +927,25 @@ impl AppsPage {
         }
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let list = gio::spawn_blocking(sessions).await.unwrap_or_default();
+            let generation=weak.upgrade().map(|p|p.request_generation.get()).unwrap_or(0);
+            let (list,errors,pending) = gio::spawn_blocking(session_report).await.unwrap_or_default();
             let Some(p) = weak.upgrade() else { return };
             p.polling.set(false);
+            if p.request_generation.get()!=generation {return;}
+            for (pkg,error) in &errors {
+                if p.app_errors.borrow().get(pkg)!=Some(error) {p.toast(&format!("{pkg}: {}",tr(if error.starts_with("scrcpy exited unexpectedly"){"scrcpy exited unexpectedly; see mirroring logs"}else{error})));}
+            }
+            p.preparing.borrow_mut().retain(|pkg,start|start.requesting || start.cancelling || pending.contains(pkg) || list.iter().any(|s|s.pkg==*pkg&&s.renderer==crate::desktop_renderer::Renderer::Scrcpy&&s.scrcpy_state.as_deref()!=Some("running")));
+            for pkg in &pending {
+                if !matches!(pkg.as_str(),"desktop"|"mirror"|"mobile") {
+                    p.preparing.borrow_mut().entry(pkg.clone()).or_insert_with(||PendingApp{control:Default::default(),requesting:false,cancelling:false});
+                }
+            }
+            *p.host_pending.borrow_mut()=pending;
+            *p.app_errors.borrow_mut()=errors;
             p.set_sessions(list);
+            p.rebuild_pending();
+            if let Some(f)=p.on_sessions.borrow().as_ref(){f();};
         });
     }
 
@@ -716,13 +961,13 @@ impl AppsPage {
         for s in &list {
             let name = st.apps.iter().find(|a| a.pkg == s.pkg).map(|a| a.name.clone());
             let title = match (s.pkg.as_str(), s.title.as_deref().filter(|t| !t.is_empty())) {
-                ("mirror", _) => "Phone screen".to_owned(),
+                ("mirror", _) => tr("Phone screen").to_owned(),
                 (_, Some(t)) => t.trim_end_matches(" — Phone").to_owned(),
                 _ => name.unwrap_or_else(|| s.pkg.clone()),
             };
             let row = adw::ActionRow::builder()
                 .title(&title)
-                .subtitle(if s.pkg == "mirror" { "Screen mirror".to_owned() } else { s.pkg.clone() })
+                .subtitle(&session_subtitle(s))
                 .use_markup(false)
                 .build();
             if s.pkg == "mirror" {
@@ -737,18 +982,20 @@ impl AppsPage {
                 icon.set(&query);
                 row.add_prefix(icon.widget());
             }
+            let preparing=s.renderer==crate::desktop_renderer::Renderer::Scrcpy&&s.scrcpy_state.as_deref()!=Some("running");
             let close_btn = gtk::Button::builder()
                 .icon_name("window-close-symbolic")
-                .tooltip_text("Close this window")
+                .tooltip_text(tr("Close this window"))
                 .valign(gtk::Align::Center)
                 .css_classes(["flat", "circular"])
                 .build();
             let weak = Rc::downgrade(self);
-            let sid = s.session_id;
+            if preparing {close_btn.set_label(tr("Cancel"));close_btn.set_tooltip_text(Some(tr("Cancel startup")));}
+            let sid = s.session_id;let pkg=s.pkg.clone();
             close_btn.connect_clicked(move |b| {
                 b.set_sensitive(false);
                 if let Some(p) = weak.upgrade() {
-                    p.close_session(sid);
+                    if preparing {p.cancel_app(&pkg);}else{p.close_session(sid);}
                 }
             });
             row.add_suffix(&close_btn);
@@ -764,9 +1011,51 @@ impl AppsPage {
     }
 }
 
+fn session_subtitle(session:&Session)->String {
+    let mut text=if session.pkg=="mirror" {tr("Screen mirror").to_owned()}else{session.pkg.clone()};
+    if let Some((w,h))=session.width.zip(session.height) {text.push_str(&format!(" · {w} × {h}"));}
+    if let Some(dpi)=session.density {text.push_str(&format!(" · {dpi} DPI"));}
+    if let Some((w,h))=session.requested_width.zip(session.requested_height) {
+        if session.width.zip(session.height)!=Some((w,h)) {
+            text.push_str(&crate::tr_format!(" · requested {w} × {h}"," · 请求 {w} × {h}"));
+        }
+    }
+    if session.renderer==crate::desktop_renderer::Renderer::Scrcpy {
+        text.push_str(" · scrcpy");
+        if session.scrcpy_state.as_deref()!=Some("running"){text.push_str(" · ");text.push_str(tr("Connecting scrcpy…"));}
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_start_returns_without_starting_a_host_or_sending_a_request() {
+        let control=StartControl::default();control.cancel();
+        assert_eq!(launch("com.example.notes",None,Default::default(),&control),Ok(String::new()));
+        assert_eq!(start_desktop(Default::default(),false,&control),Ok(String::new()));
+        assert_eq!(start_mirror(&control),Ok(String::new()));
+    }
+
+    #[test]
+    #[ignore = "requires a desktop session and isolated XDG_CONFIG_HOME/XDG_RUNTIME_DIR"]
+    fn app_preparation_has_cancel_before_a_session_exists() {
+        adw::init().unwrap();
+        assert!(!host_running());
+        let (page,_widget)=AppsPage::build(&adw::ToastOverlay::new());
+        let control=std::sync::Arc::new(StartControl::default());
+        page.preparing.borrow_mut().insert("com.example.notes".into(),PendingApp{control:control.clone(),requesting:false,cancelling:false});
+        page.rebuild_pending();assert_eq!(page.pending_rows.borrow().len(),1);assert!(page.running.is_visible());
+        page.cancel_app("com.example.notes");assert!(control.cancelled());
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while !page.preparing.borrow().is_empty()&&Instant::now()<deadline {
+            while glib::MainContext::default().pending(){glib::MainContext::default().iteration(false);}
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(page.preparing.borrow().is_empty());assert!(page.pending_rows.borrow().is_empty());
+    }
 
     #[test]
     fn app_list_keeps_icon_fields() {

@@ -1,6 +1,8 @@
-# smartconnect-linux
+# smartconnect-linux-vibe
 
 **Use Motorola's Smart Connect with a Linux PC.**
+
+A vibe-developed fork of [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux), with integrated scrcpy app/desktop streaming, foldable-device input fixes, multilingual controls, computer/phone input methods, and independent PC audio capture. The original project and its license are preserved; executable names remain unchanged.
 
 smartconnect-linux makes a Linux desktop show up in Motorola's **Smart Connect** phone app as if it
 were a Windows PC. The phone runs the stock, unmodified app: no root, no extra app, no developer
@@ -102,6 +104,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Feature | Status | Notes |
 |---|---|---|
 | Pairing by QR code | ✅ | Scan a QR from the Smart Connect app; the PC then appears in the phone's device list. |
+| Connection by USB cable | ✅ | The phone's cable mode (pick Smart Connect in the phone's USB popup): it finds the PC over USB tethering and connects over the cable. Verified on a motorola edge 70 max. The PC's cable address changes per plug-in unless fixed, see [usage](docs/usage.md#by-cable). |
 | Reconnect over Wi-Fi and Bluetooth LE | ✅ | The phone's Connect button, the daemon dialing the phone back over Wi-Fi (mDNS), and a Bluetooth LE wake that reaches the phone while Smart Connect is in the background. |
 | Automatic reconnect | ✅ | After drops, at startup and after a failed Connect, with Smart Connect in the background on the phone (Bluetooth LE wake, about 5 to 6 s). Early retries (phone back on Wi-Fi, resume, network change, Bluetooth switched on) and dropping a dead session after 70 s of silence are unit-tested, not yet seen on a device. A Disconnect from either side is respected. |
 | Feature tiles for this PC on the phone | ✅ | App streaming, Cross Control, PC lock, Hotspot and Webcam. |
@@ -117,8 +120,9 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Notification dedupe, coalescing and themed icons | 🟡 | |
 | Per-app notification mute | 🟡 | A mute toggle on each notification and a *Muted apps* list, in the GTK app and the Noctalia plugin. |
 | Clipboard text, both ways | ✅ | Password-manager copies are never sent to the phone. |
-| Clipboard images and files | ❌ | Protocol reconstructed ([file-exchange.md](docs/protocol/file-exchange.md), [clipboard.md](docs/protocol/clipboard.md)). The daemon recognises an incoming image/file clip; the fex client it needs exists but is not wired to clipboard clips yet. |
-| SMS (read threads, send, mark read) | 🟡 | Control socket only, no UI yet. Needs enabling on the phone. |
+| Clipboard images (PNG, JPEG, WebP, GIF, BMP) | 🟡 | Image clipboard sync is implemented both ways over fex, limited to 10 MB. Not yet verified on a real phone; HEIC/TIFF inputs and non-image file clipboard transfers are not supported. Password-manager copies remain excluded. |
+| Clipboard files (non-image) | ❌ | File clips are recognized but not transferred. Single-file send/receive UI is not implemented. |
+| SMS (read threads, send, mark read) | 🟡 | GTK Messages page and control API. Explicit refresh, in-memory history, protected drafts; needs phone permission. Real SMS sending is not verified here. |
 
 **Mirroring and app streaming**
 
@@ -129,6 +133,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | App streaming started from the PC | ✅ | Each phone app in its own Linux window (`smartconnect-mirror --app`). |
 | App streaming from the phone's tile and the GTK app's *Apps* page | 🟡 | |
 | Real app icons for the *Apps* page | ✅ | Downloaded from the phone on every connection into `~/.cache/smartconnect-linux/app-icons/`. `smartconnect-fex fetch-app-icons` does it by hand. |
+| Rotation of app and virtual-phone windows | 🟡 | The window turns with the app when it goes landscape, picture and input included. Verified on one phone (`SMARTCONNECT_MIRROR_ROTATION=off\|invert`). |
 | App window resize | 🟡 | Opt-in (`SMARTCONNECT_MIRROR_RESIZE=1`): the phone resizes the app's virtual display to the window. |
 | Screen share and Mobile desktop tiles | 🟡 | Shown by default. Mobile desktop has been started from the phone; Screen share is less tested. |
 
@@ -176,8 +181,27 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 
 **Desktop app**
 
+The GTK app defaults to English and supports Simplified Chinese, French, Spanish and Follow system. Open the device menu → Preferences →
+Language, choose a language (or Follow system), then press Restart to apply.
+
+The **Desktop mode** tab opens the phone's mobile desktop on the PC. It defaults to the computer
+monitor's pixel resolution; presets and Custom are also available. Borderless mode hides the
+window title bar and frame; scrcpy changes apply after restart. Following the computer resolution in scrcpy opens fullscreen. Press Start desktop mode. Apply and restart desktop changes a running desktop's size;
+the actual resolution reported by the phone appears below the settings.
+
+scrcpy app/desktop settings enable **Play phone audio** by default (Android 11+); sound is forwarded to the PC rather than forcibly disabled. Turn it off for a silent projection, then reopen the stream. Audio captures the phone output, which can include other apps. Optional **Independent of phone volume** selects app-playback capture on Android 13+; adjust loudness in the PC mixer. Apps may prohibit playback capture, so the existing output mode remains available.
+
+scrcpy app/desktop settings also offer **Fold-compatible mouse** (on by default). On Android 15+/scrcpy 4+ it binds relative mouse input to the actual app/desktop display; press Left Alt or Super to release the mouse. Mouse speed can be set independently for apps and desktop (25–400%, default 100%). **Use phone input method** is on by default and selects a source-bound physical keyboard on supported versions, so phone IMEs can handle Chinese candidate selection. Super+K opens keyboard settings. Alternatively enable **Use computer input method** (scrcpy 5+): compose and select candidates on the PC, then send the confirmed Unicode text into the focused phone field. Changes apply after reopening the stream; older versions retain SDK input.
+
+App streaming and Desktop mode each offer **Wake and unlock with ADB before starting** (off by default), for both built-in and scrcpy rendering. Credential-protected locks still require phone authentication.
+
+While a phone display or ADB connection is being prepared, use **Cancel** to release the pending start. scrcpy captures also recover their virtual display power on supported folded phones without turning on the physical inner screen.
+
+App streaming also supports **Apps → Streaming settings → Display method → scrcpy (ADB)**, with independent ADB settings and the existing resolution, DPI, bitrate/FPS and fixed-aspect controls. See [usage](docs/usage.md#app-streaming-with-scrcpy).
+
 | Feature | Status | Notes |
 |---|---|---|
+| Mobile desktop controls and resolution | ✅ / 🟡 | Desktop mode page: built-in or optional scrcpy/ADB presentation with a complete taskbar, true fullscreen when following the PC resolution, start/stop, save presets or a custom landscape size, restart to apply, and show the phone-reported stream size. 1280×720, 1920×1080 and PC-matched 2880×1920 were tested on a phone; other sizes depend on the phone. |
 | GTK app tray icon and background running | 🟡 | A StatusNotifierItem whose icon tracks the connection state, with Show/Hide, Connect, Disconnect and Quit. Closing the window hides it to the tray; Quit also stops the daemon. Opening the app starts the daemon; *Start at login* runs it hidden at login. Needs a system-tray host (the Noctalia/Quickshell bar provides one). |
 
 </details>
@@ -306,13 +330,15 @@ The action buttons need the stream host, which `smartconnectd` starts and superv
 | Component | Source | Purpose |
 |---|---|---|
 | `smartconnectd` | `src/` | The daemon. It runs the TLS WebSocket server the phone connects to and handles pairing, mDNS and Bluetooth LE reconnects, clipboard, notifications, phone status, SMS, the PC lock and Hotspot tiles, and the local control socket. It starts and supervises the helpers. The same binary is the CLI (`smartconnectd status`, `connect`, …). |
-| `smartconnect-mirror` | `mirror/` | WebRTC viewer: whole-screen mirroring and app streaming, one window per stream, plus the long-running stream host (`--host`) that also runs notification action buttons in the background. |
+| `smartconnect-mirror` | `mirror/` | WebRTC viewer: whole-screen mirroring and app streaming, one window per stream, plus the long-running stream host (`--host`), background notification actions, custom app resolution/DPI, fixed aspect/native fit, app/desktop bitrate and display-FPS caps and persistent diagnostics (`--logs`, receive/jitter timing) and enforced local ICE interface selection. |
 | `smartconnect-crosscontrol` | `crosscontrol/` | Cross Control for Wayland: an edge strip and a pointer lock (or, on GNOME, the InputCapture portal) forward the PC's mouse and keyboard to the phone. |
 | `smartconnect-display` | `display/` | The phone as an external display, extending or duplicating the desktop. It also injects the phone's touch input on the PC and shows an on-screen keyboard for the phone's keyboard button. |
 | `smartconnect-webcam` | `webcam/` | The phone camera as a Linux webcam (v4l2loopback or a PipeWire camera). |
 | `smartconnect-files` | `files/` | The phone's storage as a read-only FUSE mount, and (`serve`) a local folder shared read-only to the phone, both over File Station (NFSv3 over fingerprint-pinned mutual TLS). It handshakes with the phone through the daemon. |
 | `smartconnect-fex` | `fex/` | Client for the phone's "fex" file-transfer server (TLS pinned by fingerprint, a WebSocket of text frames, a zip download). `fetch-app-icons` downloads the app icons by hand (the daemon does it on every connection with the same library); `pull` fetches any offer. |
-| `smartconnect-gui` | `gui/` | GTK4/libadwaita app: a header device menu (current device · Pair new phone… · Preferences · Connect/Disconnect) over a Phone / Apps / Display / Files / Notifications view switcher. |
+| `smartconnect-i18n-macros` | `i18n-macros/` | Compile-time checked formatting for bundled GUI translations. |
+| `smartconnect-gui` | `gui/` | GTK4/libadwaita app: a header device menu (current device · Pair new phone… · Preferences · Mirroring logs · Connect/Disconnect) over a Phone / Apps / Display / Files / Notifications view switcher. |
+| Shared helpers | `shared/` | Diagnostic storage/redaction and validated app-display geometry shared by the mirror host and GTK GUI. |
 | Noctalia plugin | `noctalia-plugin/smart-connect/` | Bar pill, control-center button, panel (mirror, Cross Control, phone-as-display, connect and phone-files tiles) and settings for Noctalia Shell, plus the IPC target `plugin:smart-connect`. |
 | Reply window | `desktop/reply.qml` | Quick-reply window. It is built into `smartconnectd` and run with Quickshell (`qs`). |
 | Packaging | `packaging/` | `install.sh`, `uninstall.sh`, the systemd user unit, the GTK app's launcher and icon, and an Arch `PKGBUILD`. |

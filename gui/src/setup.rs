@@ -14,6 +14,8 @@
 //! run a polkit agent to ask. Elsewhere the page shows the commands to copy (a polkit request with no
 //! agent to answer it counts as a failed login and can lock the account's sudo for a while).
 
+use crate::i18n::tr;
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -70,23 +72,23 @@ pub fn welcome(app: &adw::Application, appimage: PathBuf, update: bool, go_on: i
     }
     let status = adw::StatusPage::builder()
         .icon_name("dev.smartconnect.Linux")
-        .title(if update { "Update Smart Connect" } else { "Welcome to Smart Connect" })
+        .title(if update { tr("Update Smart Connect") } else { tr("Welcome to Smart Connect") })
         .description(if update {
-            "This file is a different version than the one installed. Update to it? Your pairing and settings are kept."
+            tr("This file is a different version than the one installed. Update to it? Your pairing and settings are kept.")
         } else {
-            "Use your Motorola phone with this PC: notifications, clipboard, mirroring, files, \
+            tr("Use your Motorola phone with this PC: notifications, clipboard, mirroring, files, \
              and the phone as a second screen.\n\nSetting up installs Smart Connect for your user \
-             (no password needed), adds it to your apps and keeps it connected in the background."
+             (no password needed), adds it to your apps and keeps it connected in the background.")
         })
         .vexpand(true)
         .build();
     let set_up = gtk::Button::builder()
-        .label(if update { "Update" } else { "Set up" })
+        .label(if update { tr("Update") } else { tr("Set up") })
         .css_classes(["pill", "suggested-action"])
         .halign(gtk::Align::Center)
         .build();
     let try_it = gtk::Button::builder()
-        .label(if update { "Not now" } else { "Try without installing" })
+        .label(if update { tr("Not now") } else { tr("Try without installing") })
         .css_classes(["flat"])
         .halign(gtk::Align::Center)
         .build();
@@ -119,7 +121,7 @@ pub fn welcome(app: &adw::Application, appimage: PathBuf, update: bool, go_on: i
                         Ok(Err(e)) => e.to_string(),
                         Err(_) => "the setup did not finish".to_owned(),
                     };
-                    error.set_label(&format!("Setup failed: {why}"));
+                    error.set_label(&crate::tr_format!("Setup failed: {why}", "设置失败：{why}"));
                     error.set_visible(true);
                     button.set_sensitive(true);
                 }
@@ -184,8 +186,8 @@ impl FirewallHint {
     pub fn build() -> std::rc::Rc<Self> {
         let title = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["heading"]).build();
         let body = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).css_classes(["dim-label"]).build();
-        let allow = gtk::Button::builder().label("Allow").css_classes(["suggested-action"]).valign(gtk::Align::Center).build();
-        let copy = gtk::Button::builder().label("Copy commands").valign(gtk::Align::Center).build();
+        let allow = gtk::Button::builder().label(tr("Allow")).css_classes(["suggested-action"]).valign(gtk::Align::Center).build();
+        let copy = gtk::Button::builder().label(tr("Copy commands")).valign(gtk::Align::Center).build();
         let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
         text.append(&title);
         text.append(&body);
@@ -205,7 +207,7 @@ impl FirewallHint {
         hint.copy.connect_clicked(move |b| {
             if let Some(h) = weak.upgrade() {
                 b.clipboard().set_text(&h.commands());
-                b.set_label("Copied");
+                b.set_label(tr("Copied"));
             }
         });
         hint
@@ -230,12 +232,12 @@ impl FirewallHint {
     }
 
     fn show(&self, state: Firewall) {
-        self.copy.set_label("Copy commands");
+        self.copy.set_label(tr("Copy commands"));
         match state {
             Firewall::Fine => self.widget.set_visible(false),
             Firewall::FirewalldBlocks => {
                 // Only the default zone can be read without a password, so this may be a false alarm.
-                self.title.set_label("The firewall may block the phone");
+                self.title.set_label(tr("The firewall may block the phone"));
                 self.body.set_label(&format!(
                     "If the phone can't connect, allow port {PORT}/tcp and mDNS (you'll be asked for your password)."
                 ));
@@ -243,7 +245,7 @@ impl FirewallHint {
                 self.widget.set_visible(true);
             }
             Firewall::UfwMaybe => {
-                self.title.set_label("ufw may block the phone");
+                self.title.set_label(tr("ufw may block the phone"));
                 self.body.set_label(&format!("If the phone can't connect, allow port {PORT}/tcp and mDNS (5353/udp) in a terminal."));
                 self.allow.set_visible(false);
                 self.widget.set_visible(true);
@@ -268,7 +270,7 @@ impl FirewallHint {
             if ok {
                 h.check();
             } else {
-                h.body.set_label("That did not work. Copy the commands and run them in a terminal instead.");
+                h.body.set_label(tr("That did not work. Copy the commands and run them in a terminal instead."));
             }
         });
     }

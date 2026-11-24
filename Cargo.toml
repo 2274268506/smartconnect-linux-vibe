@@ -9,7 +9,7 @@ description = "smartconnectd: unofficial Linux peer for the Motorola Smart Conne
 # `cargo build --release --workspace` builds them all into one target directory, next to each other,
 # which is where the daemon and the GTK app look for them first (see src/helpers.rs).
 [workspace]
-members = ["mirror", "crosscontrol", "display", "webcam", "gui", "files", "fex"]
+members = ["mirror", "crosscontrol", "display", "webcam", "gui", "files", "fex", "i18n-macros"]
 resolver = "3"
 
 [dependencies]

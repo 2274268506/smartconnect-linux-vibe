@@ -8,8 +8,69 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+### Added
+
+- Optional independent audio mode for scrcpy app/desktop sessions, selecting Android 13+ playback capture while retaining output capture as a compatibility choice.
+
+- Restore scrcpy phone-output audio by default and add independent app/desktop audio switches; previous integration forced every child to use `--no-audio`.
+
+- Optional computer input method for scrcpy app/desktop windows: forward confirmed Unicode text through Smart Connect while preserving mouse controls and navigation keys.
+
+- Independent scrcpy compatibility mouse speed (25–400%) for app/desktop streaming, plus phone-IME support through a source-bound UHID keyboard with an SDK fallback.
+
+- Integrated upstream PR #7: localized Messages page with explicit sync, in-memory conversations/replies, draft preservation and disconnect cleanup.
+- Integrated upstream PR #8: native USB cable discovery/handshake and an optional user-owned NetworkManager phone-tethering profile.
+- Integrated upstream PR #9: native display rotation with GPU flipping on the default GL renderer, preserving fixed layouts and scrcpy's own rotation.
+
+- Separate opt-in ADB wake/unlock preparation for app and desktop starts, before any phone stream request, with cancellable checks and clear secure-lock failures.
+
+- Cancel pending desktop, app and whole-screen mirroring starts, including phone confirmation and ADB preparation; reject late replies after cancellation.
+
+- App streaming through scrcpy/ADB, preserving custom resolution/DPI, bitrate/FPS and native fixed-aspect layouts; app startup errors are reported separately from desktop errors.
+- Bundled French and Spanish UI translations alongside English and Simplified Chinese; new configurations default to English.
+
+- Integrated scrcpy/ADB desktop display option with automatic display discovery, shared quality controls, no duplicate owner window, logged startup errors and linked process/session cleanup.
+
+- Independent app/desktop bitrate and display-FPS limits, plus fixed app aspect ratios and physical-pixel height/width fit with borderless native-sized windows.
+
+- Fine-grained receive/jitter timing in mirroring logs and session diagnostics; restrict selected ICE addresses during gathering so a Bluetooth peer-reflexive path cannot bypass a chosen LAN interface.
+
+- Custom standalone app-stream resolution and DPI from Apps settings, with automatic mode, portrait/landscape presets and validated dimensions. Host/CLI support `--app PKG [CMP] --size WxH --dpi N`; running rows show actual size/density and mismatched requested size. Settings apply to new windows; existing windows are not restarted automatically.
+
+- Persistent mirroring diagnostics with a live GTK log viewer (device menu and Desktop mode), search, warning/error filtering, pause/follow, clipboard copy and filtered export. Keeps three 2 MiB files with transport/identifier redaction, asynchronous writes and periodic local media counters; CLI `--logs`/`--log-path` work while stopped.
+
+- Desktop app/text scaling follows the PC monitor scale by default, with 100–300% choices independent of resolution. Configures virtual-display density and physical dimensions for app content; changing scale offers a desktop restart.
+
+- GUI language preference supports Follow system and an explicit language, with restart-to-apply controls.
+- Desktop mode defaults to the PC monitor’s scaled pixel resolution, with an automatic-resolution choice alongside manual presets. Adds a saved borderless toggle that updates a running desktop window without restarting the phone stream (default XWayland renderer).
+- GTK Desktop mode page for the phone's mobile desktop, with HD/Full HD/QHD/4K presets, custom landscape dimensions, start/stop and restart-to-apply controls. Saves settings independently of PC-to-phone display settings and reports the phone's actual stream size. CLI: `smartconnect-mirror --desktop --size 1920x1080`.
+- GTK app language selector in Preferences: follow the system, Simplified Chinese or English. Saves the choice and offers to restart the app to apply it; includes translated pages, menus and tray actions.
+
 ### Fixed
 
+- Integrated upstream PR #6: reject incomplete, empty, non-regular or oversized clipboard-image metadata before requesting transfer.
+
+- Folded-phone scrcpy mouse control: default to a source-bound UHID mouse on Android 15+/scrcpy 4+, preserving SDK keyboard/IME behavior and an independent opt-out for app/desktop streaming.
+
+- Chinese and other Unicode KDE window titles: both X11 title properties now declare UTF-8 instead of writing UTF-8 bytes into a Latin-1 STRING property.
+
+- Folded-phone scrcpy black screens: restore only the session’s virtual capture power when Android leaves it off while the Smart Connect source continues rendering.
+
+- scrcpy desktops following the PC resolution now start fullscreen instead of using scrcpy’s smaller default window.
+
+- Clarify notification troubleshooting: phone app selection and source-app Android permissions are separate from notification-listener access; desktop Do Not Disturb can suppress popups while the notification list still syncs.
+
+- High-resolution phone video requests a 4 MiB UDP receive buffer on libnice sockets instead of relying on small system defaults, reducing burst loss that can freeze decoding until the next keyframe. Respects kernel limits and leaves system-wide settings unchanged.
+
+- SMS/MMS unread status uses phone-pushed updates without periodic metadata polling. Explicit SMS control commands remain available; phone-side reads may leave the cached count unchanged until the next phone status update.
+
+- Frozen phone video now retries a keyframe request when packets continue without decoded frames, or user input produces no new frames. Retries are rate limited and capped; static idle windows do not reconnect. Session diagnostics expose packet, decoded-frame and input counters.
+
+- Phone-page notification shortcut now counts the same visible notifications as the Notifications tab, including local dismissals. The phone’s unread SMS/MMS count is shown separately as a non-clickable phone-only status instead of linking to an empty notification list.
+- Closing an idle phone-video window now ends its session through a direct GL-window callback, without waiting for another phone frame to trigger a sink error.
+- Closing/reopening the main GTK window no longer waits for tray D-Bus updates on the UI thread. Updates run on a worker, coalesce to the latest state and skip unchanged values; tray shutdown is nonblocking.
+- Mirror playback lets the default GL sink negotiate native decoder formats and perform color conversion on the GPU. Uses latest-frame rendering without retaining a last-sample buffer, a default 80 ms receive jitter buffer (MIRROR_LATENCY_MS override), and asynchronous window teardown so driver cleanup does not block other host controls. Session diagnostics include rendered/dropped frame counts.
+- Phone-to-PC mirroring: request a clean H.264 keyframe after packet loss and discard stale decoded frames when rendering falls behind. Log the selected decoder and renderer for troubleshooting. Automated media tests pass; improvement on a real phone is not yet verified.
 - Clipboard Linux → phone on GNOME: GNOME has no data-control protocol, so `wl-paste --watch` refused to run and copies on the PC never reached the phone. The daemon now follows the clipboard through Xwayland (XFixes) there; password-manager copies are still skipped.
 - Phone display lag: frames are now converted and scaled on the GPU (VA-API `vapostproc`; multi-threaded on the CPU otherwise) and the encoder runs in its own thread. Before, 60 fps did not fit the per-frame time and frames queued up (measured on the PC: 53 ms → 21 ms per frame, no more dropped frames).
 - GTK Display tab: the settings groups no longer leave empty space below them.
@@ -35,6 +96,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 - GTK app: the window was restructured to a shared design. A header **device menu** (left of the title) shows the connected device and holds *Pair new phone…*, *Preferences* (the *Start at login* switch) and *Connect/Disconnect* — moved out of the pages. The view switcher now has five pages: *Phone* (a compact phone card with wallpaper, name, an inline battery/Wi-Fi/mobile/Bluetooth row and **Mirror screen**, an unread-messages shortcut to Notifications, and the Cross Control switch), *Apps* (search + Recent chips + an icon grid), *Display* (a phone-as-display card over Layout / Experimental / Advanced groups), *Files* (a storage card with a *Read-only* badge, **Open in Files**, quick-folder shortcuts, and a *Mount automatically when connected* switch) and *Notifications* (grouped under *Today* with **Clear all** and a per-notification **⋯** menu for *Open on phone* / *Dismiss* / *Mute app*). Pairing is now a dialog opened from the device menu. All controls follow the system light/dark theme and accent colour. No change to the control-socket wiring, mirror/app-streaming, display sessions, mount lifecycle, tray or autostart behaviour.
 
 ### Added
+
+- Separate opt-in ADB wake/unlock preparation for app and desktop starts, before any phone stream request, with cancellable checks and clear secure-lock failures.
+
+- Cancel pending desktop, app and whole-screen mirroring starts, including phone confirmation and ADB preparation; reject late replies after cancellation.
+
+- App streaming through scrcpy/ADB, preserving custom resolution/DPI, bitrate/FPS and native fixed-aspect layouts; app startup errors are reported separately from desktop errors.
+- Bundled French and Spanish UI translations alongside English and Simplified Chinese; new configurations default to English.
 
 - AppImage for any distribution (`packaging/appimage/make-appimage.sh`, built on Arch with quick-sharun, everything bundled): opening it shows a welcome window whose **Set up** installs to `~/.local/opt/smartconnect-linux` with the launcher and the user service; `--install`, `--uninstall`, and running any bundled program through the file.
 - Pairing window: warns when firewalld's default zone blocks port 52020 and, on GNOME and KDE, opens it with one click (firewalld asks for the password); shows the commands for ufw and other desktops.

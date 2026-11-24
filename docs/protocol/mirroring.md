@@ -122,7 +122,16 @@ sequenceDiagram
 - **Desktop size:** for `"desktop"` the phone uses its own desktop resolution setting when it fits
   inside the PC's `width x height` from service 15 `cmd 1`, else the PC's size (limited by the
   encoder), and derives the desktop density from `phyWidth`/`phyHeight` (millimetres) (OBSERVED,
-  phone app). This project sends the resolution from the phone's `cmd 0` (or 1920x1080).
+  phone app). This project uses the resolution from the phone's `cmd 0` for phone-initiated views (or
+  1920x1080). A PC start with an explicit desktop size first sends service 1 `cmd 33`, then
+  `cmd 1` view 2, and uses the requested size in service 15 `cmd 1` (OBSERVED, project code;
+  phone behavior depends on its encoder limits).
+- **Desktop scaling (project implementation):** the host accepts a 100–300% scale independently
+  of resolution. It sends `displayDensity=160*scale/100`, `displayScale=scale/100` and physical
+  dimensions rounded from `pixels*25.4/density` millimetres. The physical dimensions matter
+  because the desktop derives its density from them. The GTK default uses the PC monitor scale.
+  This creates a new desktop virtual display; it does not resize standalone app displays.
+  Device validation of the requested/reported density is recorded in the design notes.
 - Switching between mirror and virtual phone while connected keeps the same service 15 session;
   the content and `displayId` change (OBSERVED, phone app).
 
@@ -205,7 +214,7 @@ session of the PC.
 | Codecs | The phone's hardware encoders: H.265 is listed first when its (default-on) H.265 preference is set, followed by H.264. Answer with H.264 only unless you decode H.265. | OBSERVED on a device |
 | Candidates | The phone holds back its own candidates until it has the answer, then sends them. | OBSERVED |
 | Rate | Up to 60 fps; bitrate between about 300 kbit/s and 8000 kbit/s. | OBSERVED (code) |
-| Rotation | The phone sends `cmd 16` and a new `cmd 3` with the new size. If the answer leaves out the `urn:3gpp:video-orientation` header extension, the phone rotates frames itself and the receiver just follows the frame size. | OBSERVED (code) / OBSERVED in this project |
+| Rotation | The phone sends `cmd 16 {sessionId, displayId, rotation}` when the display turns (0-3, Android's `Surface.ROTATION_*`; usually twice). The video stays the display's natural portrait size (720x1584 in a capture; no new `cmd 3`, no frame-size change) with the rotated app drawn sideways in it, even with the `urn:3gpp:video-orientation` extension left out of the answer. The receiver has to turn the picture itself; the touch positions the phone wants are those of the upright picture (the turned one), not of the sent frame. | OBSERVED on a device (virtual phone, landscape video app); the turn direction for 1 and 3 is INFERRED from Android's definition and confirmed for 1 only |
 | Capture | The phone mirrors its main display into a virtual display through its privileged desktop service, not through the screen-capture API, so there is no capture consent dialog. | OBSERVED (code) |
 | Windows tunnel | When the Windows app's own peer-to-peer tunnel is up, the phone routes the WebRTC packets through it. Without the tunnel (as with this project) the phone uses plain host candidates on the LAN, which works. | OBSERVED (capture, and on a device) |
 
@@ -276,3 +285,39 @@ than `decodebin` inside a bin added at runtime (OBSERVED in this project).
 - Answering H.265 when the PC can decode it.
 - Whether the phone-initiated views (service 1 `cmd 0`) and Ready For desktop work end to end with
   this project's answers (implemented, not yet tried on a device).
+
+### Local ICE path binding and timing diagnostics
+
+**OBSERVED (local implementation/device):** filtering advertised candidates alone does not
+restrict libnice's local checks. A peer-reflexive candidate can select a Bluetooth PAN even
+when only the Wi-Fi address was advertised. Address/list selections now call public
+`nice_agent_add_local_address` before creating ICE streams. The default `pcAddress` selection
+uses the same restriction; `all` and the broad private-LAN fallback retain automatic gathering.
+No new phone command or polling is involved. Local jitterbuffer sink/src probes retain only
+bounded sequence/timestamp/monotonic-time metadata (8,192 outstanding records), never payloads.
+See `streamTiming` and `jitterStats` in the control-socket API.
+
+### Per-desktop quality limits
+
+**OBSERVED (implementation):** desktop starts retain their own optional quality profile,
+independently of queued standalone apps. The host applies the same video-SDP bitrate ceiling
+and decoded-frame display limiter described in [app streaming](app-streaming.md#quality-negotiation-and-local-app-aspect-constraints).
+No additional phone polling is introduced. Changing quality requires a new desktop session.
+
+### scrcpy desktop presentation (PC-local)
+
+**OBSERVED (implementation):** `renderer:scrcpy` uses the same service-1 desktop request,
+service-15 answer/ICE and 30-second heartbeat. The source stream is kept flowing to a local
+fakesink without decoding. After receiving the real `displayId`, the host starts a separate
+ADB/scrcpy capture of that existing display. No proprietary renderer/ADB fields are sent to
+the phone service bean. The taskbar is created by the Motorola desktop session, not by scrcpy.
+Closing either side terminates the owned child/source pair. This retains two phone encoders;
+a phone-side encoder pause is not used because display lifetime/content behavior is unverified.
+
+**OBSERVED (implementation):** local desktop `fullscreen:true` maps to scrcpy `--fullscreen`; the GUI sets this when following the computer resolution. This fixes client sizing independently of the requested phone display size and adds no phone protocol field. Custom desktop sizes remain windowed. App presentation uses the same existing-display capture path; see [app streaming](app-streaming.md#scrcpy-app-presentation-pc-local).
+
+**OBSERVED (implementation):** cancelling a pending desktop/mirror uses the existing service-1 cmd 5 stop and local suppression of late service-15 invitations/offers. The folded-screen workaround is entirely ADB-local: it powers only scrcpy's additional virtual capture, leaving the service-15 source and heartbeat protocol unchanged. **OBSERVED (device):** while folded, the Motorola source virtual display was ON and scrcpy's capture was OFF; requesting ON for that capture restored visible app frames with the physical inner screen still OFF.
+
+**OBSERVED (implementation):** optional desktop ADB wake/unlock preparation completes before the service-1 resolution/start messages. It adds no proprietary phone field or polling command to the Smart Connect protocol. Protected locks and Smart Connect confirmation remain controlled by Android/the phone app.
+
+**OBSERVED (implementation):** scrcpy desktops use the same source-bound UHID mouse selection as app streams on Android 15+/scrcpy 4+. The capture-power and input fixes are independent; no physical-display interactive override or new Smart Connect wire command is used.

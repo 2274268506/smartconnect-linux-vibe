@@ -33,7 +33,7 @@ security the phone offers, which limits what this project can change.
 | Direction | What | Protection |
 |---|---|---|
 | Inbound TCP 52020 (`--port`), **all interfaces** | TLS WebSocket for pairing, sessions (`/readyfor/`) and Connect-button triggers (`/readyfor/mdns`). | TLS 1.2/1.3 (rustls). A session needs a valid pairing token or a known phone id (see below). |
-| mDNS advert (`_readyformdns._tcp` via avahi) | TXT records: this run's salted device id, the PC name (`--name`), the certificate fingerprint (hex), static type fields, a timestamp. | Public on the LAN by design. The fingerprint is stable, so the PC can be recognised on the network across restarts. |
+| mDNS adverts (`_readyformdns._tcp` and, for the cable, `_readyfor._tcp` via avahi; same TXT) | TXT records: this run's salted device id, the PC name (`--name`), the certificate fingerprint (hex), static type fields, a timestamp. | Public on the LAN by design. The fingerprint is stable, so the PC can be recognised on the network across restarts. |
 | Outbound TCP to the phone's discovery port | One sealed invite when reconnecting over Wi-Fi. | AES-256-GCM sealing with the per-pair key. The phone's TLS certificate is throwaway and isn't checked. |
 | Bluetooth LE (Connect wake) | The PC scans, connects to the phone as a GATT central, writes one sealed invite and disconnects. | The same AES-GCM sealing. The adapter's power state is never changed. |
 | Bluetooth LE peripheral (only without `--no-ble`) | Advertises service 0x5246 with this run's device id. The GATT server only logs writes. Also powers the adapter on at startup. | Experimental and not needed. The systemd unit passes `--no-ble`. |
@@ -200,11 +200,34 @@ find ~/.local/share/smartconnect-linux/sessions -name '*.jsonl' -mtime +7 -delet
 
 Never attach a session log to an issue without reading it and removing personal data first.
 
+### Mirroring diagnostics
+
+The stream host and standalone viewer automatically write metadata to
+`$XDG_STATE_HOME/smartconnect-linux/mirror.log` (default `~/.local/state/smartconnect-linux/`).
+The directory is 0700; newly created log/lock files are 0600. Rotation keeps the current file
+and two backups, each limited to 2 MiB. Logs contain package/session identifiers, video sizes,
+density, codec/sink choices, connection state, media/input counts and warnings/errors. UTC
+timestamps survive redaction.
+
+Raw SDP/RTP capabilities carrying transport credentials, unknown service payloads, changed
+window titles and unmapped typed key values are omitted. Recognized secret/device-identifier
+fields and IP/MAC addresses are redacted. The GTK viewer and export reapply redaction; export
+uses the active search/severity filter across retained files and creates new local files with
+private permissions. No media, notification/SMS bodies or clipboard contents are deliberately
+logged. Library error messages may contain other context; review exports before sharing them.
+
+The writer uses a bounded queue on a background thread, skipping entries under heavy pressure
+rather than blocking input/media threads. Exported files remain wherever the user saves them;
+rotating the source log does not remove exports.
+
 ### Helper output
 
-The stream host prints package and app names, connection state and short excerpts of unrecognised
-stream messages (up to 300 characters). Cross Control prints its service messages (screen sizes,
-state). The phone display writes its SDP files as listed above. None of them record media.
+The stream host still prints package/app names and connection state to its ordinary console;
+the new dedicated diagnostics are separate from existing runtime/cache stdout captures.
+Unrecognized service messages now print their command number instead of payload excerpts, and
+raw transport capabilities are no longer printed. Cross Control prints its service messages
+(screen sizes, state). Phone display SDP files are listed above. Extra `GST_DEBUG` console output
+follows GStreamer's configuration and can be more detailed than the diagnostic file.
 
 ## Known gaps
 
@@ -262,3 +285,33 @@ Fixed:
 Please don't open a public issue for security problems. Use GitHub's private vulnerability
 reporting for this repository (*Security* tab, then *Report a vulnerability*), and include the
 version or commit, your setup, and steps to reproduce. Remove personal data and keys from any logs.
+
+### Optional ADB/scrcpy app and desktop backend
+
+Selecting scrcpy uses the user's existing ADB trust and may attempt `adb connect` to the paired
+phone's network address at the configured port. It never performs `adb pair` or approves a
+phone prompt. Automatic selection prefers a matching peer address or a single authorized
+ADB device; specify the target when several are present. ADB device hints are local preferences
+and may identify a device; keep preference files and raw ADB output out of shared reports.
+
+The host spawns tools with argument arrays, not shell text; backend/device/port settings are
+validated and no arbitrary command-line field is accepted. Logs redact the selected serial
+and omit ADB device-list rows in addition to normal address redaction. Only the spawned child
+process group is terminated; existing external scrcpy processes and the global ADB server
+are not intentionally stopped. Normal ADB/scrcpy capture restrictions still apply.
+
+The folded-screen workaround uploads this repository's small display-power helper to a unique `/data/local/tmp/smartconnect-display-power-<owner>-<session>-<counter>.dex` path using existing ADB trust. It considers only a newly created shell-owned virtual scrcpy capture matching the session source, excludes captures present before startup, and fails closed on ambiguous discovery. It never changes physical display power, folding, keyguard, device settings or authorization. Discovery data stays in process memory. The host removes the temporary DEX and terminates its helper on session exit; the helper exits when its control input closes or the source disappears. Android builds without the required API/permission keep the normal scrcpy path.
+
+Automatic ADB wake/unlock is opt-in and off by default, saved independently for app and desktop starts. It uses the already-authorized device selector, sends only the fixed `input keyevent KEYCODE_WAKEUP` and `wm dismiss-keyguard` commands, and reads bounded keyguard-policy output without logging it. It does not request, store, inject or guess credentials, change lock settings, or bypass authentication/Smart Connect consent. A protected or unrecognized lock state stops the pending start. Cancellation terminates only the owned ADB command group.
+
+The folded-mouse fix uses scrcpy’s session-owned UHID device and source-display association on supported versions. It does not install a global input listener, record typed text, change other device associations, or mark physical/lock-screen displays interactive. scrcpy removes its own association and HID device on exit. The phone-IME option may also create a session-owned, source-bound UHID keyboard. SDK fallback and all existing authorization/keyguard requirements remain. Neither option changes the global IME, keyboard layout or pointer-speed setting; no text or candidate content is logged.
+
+The Messages page keeps message text and drafts in RAM only, renders phone text without markup, clears private previews/dialogs on disconnect, and sends only in response to the user’s Send/Enter action. A failed request does not erase the draft. Local cache refresh is distinct from phone sync. USB cable diagnostics log service/action metadata rather than raw frames, device records or invitation JSON. Only an observed cable handshake suppresses LAN endpoint learning; a USB Ethernet driver alone is insufficient. NetworkManager calls time out and preserve default routes/profile ownership as described in USB usage.
+
+With a UHID keyboard, the scrcpy child uses `SDL_IM_MODULE=none` and `XMODIFIERS=@im=none` so desktop Fcitx/XIM composition does not consume physical keys intended for the phone IME. SDK fallback leaves those variables inherited. These environment changes are scoped to the child; the desktop input method remains unchanged.
+
+The optional computer-IME adapter is original source, embedded at build time and extracted with create-new semantics into a private 0700 directory (0600 library). It is preloaded only into the owned scrcpy process. The inherited unnamed socket is marked close-on-exec after loading so later child programs do not inherit it. The host accepts at most 8192 bytes per commit, rejects invalid UTF-8/NUL payloads, and binds delivery to the live owning session rather than a client-supplied display. Queue overflow reports a generic error without text. No confirmed text is persisted, logged or placed in the clipboard. Owned session teardown closes the channel and removes the adapter.
+
+The scrcpy audio option forwards phone output through the already-authorized scrcpy session. It never selects microphone or call-capture sources. Output capture is not scoped to the displayed app and can include other phone sound. Audio is played live and is not recorded by this integration. Closing the owned viewer stops its audio capture/playback.
+
+Independent audio uses the scrcpy playback source and respects application capture exclusions. It never changes the phone volume, microphone/call source, default IME or desktop mixer configuration. Turning off audio overrides both capture modes; selecting playback adds no recording or duplication flag.

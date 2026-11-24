@@ -64,7 +64,7 @@ impl Mirror {
             return Ok(());
         }
         let bin = binary(self.name);
-        let child = Command::new(&bin).args(args).spawn().map_err(|e| format!("Could not start {}: {e}", bin.display()))?;
+        let child = Command::new(&bin).args(args).spawn().map_err(|e| crate::tr_format!("Could not start {}: {e}", "无法启动 {}：{e}", bin.display()))?;
         self.child = Some(child);
         self.stop_requested = false;
         Ok(())

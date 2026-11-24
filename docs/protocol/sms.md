@@ -1,7 +1,7 @@
 # Messages: SMS and MMS (service 204, with 100)
 
 **Status in this project:** SMS reading, sending and marking as read are implemented in the daemon
-and exposed as control-socket commands (`sms_threads`, `sms_thread`, `sms_send`, `sms_mark_read`,
+and exposed through the GTK Messages page and control-socket commands (`sms_threads`, `sms_thread`, `sms_send`, `sms_mark_read`,
 `sms_state`). The status message on service 100 has been seen from a real phone; the rest of this
 page comes from static analysis of the phone app and is **not yet verified end to end**. MMS media
 and contact sync are parsed but not used. Services 205 and 206 are not worked out.
@@ -53,6 +53,13 @@ flat, without `pId` or nested `data` (OBSERVED on a device):
 | `unreadCnt`, `unreadList` | Unread inbound messages within the time window, by type (1 SMS, 2 MMS). |
 
 The phone sends it on connect, on every enable or permission change, and on request (`cmd 1016`).
+
+**OBSERVED on a device:** a phone-side read did not promptly update the cached count;
+a service 204 `cmd 1016` request returned service 100 `cmd 1018` with `unreadCnt: 0`, even
+with `enabled: false`. This request can refresh metadata without `cmd 18`, message bodies,
+contacts or read-state changes. The daemon does not issue periodic queries; status updates
+arrive through the phone's unsolicited messages unless explicitly requested.
+
 
 ## Gates
 
@@ -155,3 +162,5 @@ sequenceDiagram
 - Windows' `ver` value and whether any behaviour depends on it beyond the thresholds above.
 - What services 205 and 206 carry (likely contacts or calls in the same family).
 - Whether advertising `"204"` changes anything.
+
+**OBSERVED (implementation):** GUI open/refresh sends one existing sync sequence and briefly reads the local cache using `refresh:false`, which generates no additional service-204 requests. Read marks retain SMS/MMS kind. Send success in the UI means queued to the phone, not final delivery. No real SMS was sent during local integration validation.

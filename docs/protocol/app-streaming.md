@@ -35,6 +35,24 @@ phone app; the PC-initiated path also on a device):
   alignment 32). With `supportCustomDisplay: true` the phone uses `displayWidth`, `displayHeight`
   and `displayDensity` as given.
 
+### Custom app display in this project
+
+**OBSERVED on a device:** a requested 720x1280 app display at 240 DPI was reported and decoded
+at that size. Closing it and starting without a custom request restored automatic fitting.
+
+The host's `app` control request accepts width/height/density and advertises `appResolution`.
+The outgoing service 15 cmd 1 uses the requested `width`/`height`, matching `displayWidth` and
+`displayHeight`, `displayDensity`, `displayScale: 1.0`, and boolean `supportCustomDisplay: true`.
+Physical dimensions are derived from pixels and density. Without a custom request the original
+1920x1080 fitting bound and `supportCustomDisplay: false` remain (OBSERVED, project code).
+
+Validation allows either orientation, even dimensions 320–3840 with short side <=2160, and DPI
+120–640. These are project limits, not a claim about every phone encoder. Custom profiles are
+per queued launch/session. They are ignored for headless notification actions and view packages.
+Opt-in window resizing does not overwrite an explicitly requested app geometry. The GUI saves
+defaults for new app streams; existing windows require an explicit close/reopen. Device
+verification results are recorded in `.notes/app-custom-resolution.md`.
+
 ## Starting a stream
 
 ### From the PC
@@ -335,3 +353,43 @@ Every front-end of this project reads phone app icons from one directory:
   that stream (`cmd 7`): moved to the phone's screen or destroyed.
 - Whether the phone's display-size fitting for `cmd 17` follows the window's aspect ratio or only
   picks a scale step of the phone's own screen size.
+
+### Quality negotiation and local app aspect constraints
+
+**OBSERVED (implementation):** optional quality limits modify only the video answer section:
+`b=AS` (kbit/s), `b=TIAS` (bit/s), H.264 FMTP `x-google-max-bitrate` and optional
+`max-fr`/`a=framerate`. No undocumented JSON quality keys are added to service 15 commands.
+The answer applied locally is the same answer sent to the phone. Frame-rate caps also have
+a local monotonic-clock limiter after decoding, so unsupported remote frame-rate signalling
+cannot make the display cap ineffective. This intentionally does not promise an encoding cap.
+Phone acceptance of bitrate ceilings/higher maxima remains device-dependent.
+
+App layout is PC-local configuration carried with each start request. Native-fit resolution
+is computed in physical monitor pixels; the host checks the dimensions and ratio, then applies
+WM_NORMAL_HINTS and borderless client geometry on its XWayland window. These options never
+change the desktop or PC-to-phone Display configuration. Encoder limits and compositor rules
+still apply; a requested source size is not proof of native on-screen pixel mapping.
+
+### scrcpy app presentation (PC-local)
+
+**OBSERVED (implementation):** `app` requests with `renderer:scrcpy` use the existing Smart Connect app-display service-15 sequence. The host drains the compressed source without decoding, then starts ADB/scrcpy with the reported existing display ID; it does not use `--new-display`. Local renderer/ADB/layout fields are not added to phone beans. Custom geometry/DPI retain their existing protocol mapping. Quality also maps to scrcpy encoder/capture arguments. Viewer/session close tears down the owned pair; failures are keyed by app package on the local control socket. Encoder-resource constraints still apply.
+
+### Cancel before an offer
+
+**OBSERVED (implementation):** PC-local package cancellation removes pending service-15 start work. A delayed cmd 2 invite is ignored; a delayed cmd 3 offer with a known session ID receives the existing cmd 7 close without an SDP answer or virtual-display creation. A 30-second local marker bounds this rejection; an explicit new PC start clears it. No new proprietary phone cancellation command is invented. Existing established-session close behavior remains unchanged.
+
+### Optional ADB preflight
+
+**OBSERVED (implementation):** `scrcpy.wakeUnlock` is PC-local configuration. When enabled, service-15 cmd 1 is queued only after authorized ADB wake/dismiss and keyguard verification succeed. A cancelled/failed preflight sends no app start. The flag is not sent as an undocumented phone service-15 field; existing stream and close sequences are unchanged.
+
+### Folded scrcpy input
+
+**OBSERVED (device):** the Smart Connect source remained interactive, while Android's input manager marked scrcpy's mirror display noninteractive after folding. SDK mouse events to that mirror did not activate calculator buttons; SDK keyboard input to the source worked. A source-associated scrcpy UHID mouse activated calculator buttons while folded.
+
+**OBSERVED (implementation):** `foldMouse` is PC-local scrcpy input selection. It changes mouse arguments on supported versions. `phoneIme` separately selects a source-bound UHID keyboard for the phone input method; `mouseSpeedPercent` sets a child-local SDL sensitivity hint for the UHID mouse. Unsupported versions fall back to SDK input. These options add no service-15/16 fields and do not change the owner stream heartbeat. Device association/cleanup is performed by scrcpy itself.
+
+**OBSERVED (implementation):** `scrcpy.computerIme` is local input routing. A private SDL3 adapter captures confirmed computer text and the host submits it as service-16 command 7 (`TEXT_COMMITTED`) using the active source display ID. Keyboard navigation remains scrcpy SDK input, and mouse selection remains independent. No new phone protocol command or phone application installation is needed.
+
+**OBSERVED (implementation):** `scrcpy.audio` is local scrcpy process configuration. Enabled selects its phone-output audio channel; disabled passes `--no-audio`. This does not add Smart Connect service-15 audio negotiation or change the owner stream heartbeat.
+
+**OBSERVED (implementation):** local `scrcpy.independentAudio` selects the `playback` audio source on Android SDK 33+, without a Smart Connect volume command or change to the phone's persisted media level. Device/app-specific muted-phone behavior is a separate validation concern from argument selection.

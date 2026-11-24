@@ -24,12 +24,43 @@
 //!   smartconnect-mirror --list-apps      print the phone's app list (svc 17)
 //!   smartconnect-mirror --sessions       list the host's open sessions
 
+macro_rules! println {
+    ($($arg:tt)*) => {{ let message = format!($($arg)*); crate::diagnostics::record("INFO", &message); std::println!("{message}"); }};
+}
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{ let message = format!($($arg)*); crate::diagnostics::record("ERROR", &message); std::eprintln!("{message}"); }};
+}
+macro_rules! warnln {
+    ($($arg:tt)*) => {{ let message = format!($($arg)*); crate::diagnostics::record("WARN", &message); std::eprintln!("{message}"); }};
+}
+mod computer_ime;
+mod diagnostics;
+// Shared with the GUI; each binary uses different halves of the storage API.
+#[allow(dead_code)]
+#[path = "../../shared/mirror_log.rs"]
+mod mirror_log;
+#[allow(dead_code)]
+#[path = "../../shared/app_display.rs"]
+mod app_display;
+#[allow(dead_code)]
+#[path = "../../shared/stream_settings.rs"]
+mod stream_settings;
+#[allow(dead_code)]
+#[path = "../../shared/desktop_renderer.rs"]
+mod desktop_renderer;
 mod actions;
 mod ice;
 mod icons;
 mod keys;
+mod playback;
+mod stream_timing;
+mod quality;
+mod scrcpy;
 mod resize;
+mod rotation;
+mod receive_buffer;
 mod views;
+mod window_close;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -39,6 +70,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -173,6 +205,10 @@ struct SessState {
     /// Headless (background action) sessions: when to close.
     headless: Option<actions::HeadlessTimer>,
     resize: resize::ResizeDebouncer,
+    stream_size: Option<(u32, u32)>,
+    stream_density: Option<i64>,
+    rotation: i64,
+    window_turned: Option<bool>,
 }
 
 struct Session {
@@ -183,6 +219,12 @@ struct Session {
     shortcut_id: Value,
     /// A notification action running without a window (video goes to a fakesink).
     headless: bool,
+    requested_display: Option<app_display::AppDisplay>,
+    quality: stream_settings::Quality,
+    layout: stream_settings::Layout,
+    renderer: desktop_renderer::Renderer,
+    fullscreen: bool,
+    scrcpy_options: desktop_renderer::ScrcpyOptions,
     d: Arc<Daemon>,
     st: Mutex<SessState>,
     pipeline: gst::Pipeline,
@@ -190,8 +232,20 @@ struct Session {
     title: Mutex<String>,
     tag: Mutex<Option<gst::Element>>,
     sink: Mutex<Option<gst::Element>>,
+    flip: Mutex<Option<gst::Element>>,
     /// The video window's X11 id once known, and the title last written to it.
-    xwin: Mutex<Option<(u32, String)>>,
+    xwin: Mutex<Option<(u32, String, bool)>>,
+    borderless: AtomicBool,
+    window_closed: Arc<AtomicBool>,
+    watched_window: Mutex<Option<gst_gl::GLWindow>>,
+    progress: Arc<Mutex<playback::Progress>>,
+    recovery_pad: Mutex<Option<gst::Pad>>,
+    receive_buffers: Mutex<receive_buffer::ReceiveBuffers>,
+    timing: Arc<Mutex<stream_timing::Timing>>,
+    frame_limiter: Arc<Mutex<quality::FrameLimiter>>,
+    external: Mutex<Option<scrcpy::Link>>,
+    external_since: Instant,
+    phone_address: Option<String>,
 }
 
 /// What a new session is: the phone's ids for it plus how we show it.
@@ -202,14 +256,25 @@ struct SessionInfo {
     cmp: Value,
     shortcut_id: Value,
     title: String,
+    requested_display: Option<app_display::AppDisplay>,
+    quality: stream_settings::Quality,
+    layout: stream_settings::Layout,
+    renderer: desktop_renderer::Renderer,
+    fullscreen: bool,
+    scrcpy_options: desktop_renderer::ScrcpyOptions,
     headless: bool,
 }
 
 impl Session {
     fn new(info: SessionInfo, filter: ice::CandidateFilter, d: Arc<Daemon>) -> Result<Arc<Self>> {
-        let SessionInfo { sid, pkg, user_id, cmp, shortcut_id, title, headless } = info;
+        let SessionInfo { sid, pkg, user_id, cmp, shortcut_id, title, requested_display, quality, layout, renderer, fullscreen, scrcpy_options, headless } = info;
         let pipeline = gst::Pipeline::with_name(&format!("session-{sid}"));
-        let webrtc = gst::ElementFactory::make("webrtcbin").property_from_str("bundle-policy", "max-bundle").build()?;
+        let latency = playback::latency_ms();
+        let webrtc = gst::ElementFactory::make("webrtcbin")
+            .property_from_str("bundle-policy", "max-bundle").property("latency", latency).build()?;
+        ice::bind_agent(&webrtc, &filter)?;
+        let timing = Arc::new(Mutex::new(stream_timing::Timing::default()));
+        stream_timing::observe(&pipeline, timing.clone());
         pipeline.add(&webrtc)?;
         let s = Arc::new(Session {
             sid,
@@ -218,6 +283,12 @@ impl Session {
             cmp,
             shortcut_id,
             headless,
+            requested_display,
+            quality,
+            layout,
+            renderer,
+            fullscreen,
+            scrcpy_options,
             d,
             st: Mutex::default(),
             pipeline: pipeline.clone(),
@@ -225,7 +296,18 @@ impl Session {
             title: Mutex::new(title),
             tag: Mutex::new(None),
             sink: Mutex::new(None),
+            flip: Mutex::new(None),
             xwin: Mutex::new(None),
+            borderless: AtomicBool::new(false),
+            window_closed: Arc::new(AtomicBool::new(false)),
+            watched_window: Mutex::new(None),
+            progress: Arc::default(),
+            recovery_pad: Mutex::new(None),
+            receive_buffers: Mutex::default(),
+            timing,
+            frame_limiter: Arc::default(),
+            external: Mutex::new(None),external_since:Instant::now(),
+            phone_address: daemon_status().and_then(|s|s["phoneAddress"].as_str().map(str::to_owned)),
         });
         {
             let w = Arc::downgrade(&s);
@@ -275,7 +357,15 @@ impl Session {
     }
 
     fn attach_decoder(self: &Arc<Self>, pad: &gst::Pad) -> Result<()> {
-        if self.headless {
+        if !self.headless {
+        let progress = self.progress.clone();
+        pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+            progress.lock().unwrap().packet(Instant::now());
+            gst::PadProbeReturn::Ok
+        });
+        }
+        if self.headless || self.renderer==desktop_renderer::Renderer::Scrcpy {
+            if !self.headless {println!("[{}] desktop owner: draining compressed video without a local decoder or window",self.sid);}
             // No window: keep the stream flowing (an unlinked pad would error the pipeline).
             let bin = gst::parse::bin_from_description("queue ! fakesink sync=false async=false", true)?;
             self.pipeline.add(&bin)?;
@@ -283,25 +373,49 @@ impl Session {
             bin.sync_state_with_parent()?;
             return Ok(());
         }
-        println!("[{}] video arriving: {:?}", self.sid, pad.current_caps().map(|c| c.to_string()));
-        let desc = format!(
-            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv ! taginject name=tag ! {} name=sink sync=false",
-            pick_decoder(),
-            pick_sink()
+        *self.recovery_pad.lock().unwrap() = Some(pad.clone());
+        println!("[{}] video RTP stream arriving", self.sid);
+        let decoder = pick_decoder();
+        let sink = pick_sink();
+        println!(
+            "[{}] playback: decoder={decoder}, sink={sink}, GL window={}, jitter buffer={} ms",
+            self.sid,
+            std::env::var("GST_GL_WINDOW").unwrap_or_else(|_| "auto".into()),
+            self.webrtc.property::<u32>("latency")
         );
+        let desc = playback::description(&decoder, &sink);
         let bin = gst::parse::bin_from_description(&desc, true)?;
         let tag = bin.by_name("tag").context("no taginject")?;
         tag.set_property("tags", title_tags(&self.title.lock().unwrap()));
         *self.tag.lock().unwrap() = Some(tag);
         *self.sink.lock().unwrap() = bin.by_name("sink");
+        *self.flip.lock().unwrap()=bin.by_name("flip");
+        self.apply_rotation(self.st.lock().unwrap().rotation);
+        let progress = self.progress.clone();
+        bin.by_name("render_queue").context("no render queue")?
+            .static_pad("sink").context("no decoded input pad")?
+            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                progress.lock().unwrap().decoded(Instant::now());
+                gst::PadProbeReturn::Ok
+            });
+        let limiter=self.frame_limiter.clone();let fps=self.quality.fps;
+        bin.by_name("render_queue").context("no render queue")?.static_pad("src").context("no render output")?
+            .add_probe(gst::PadProbeType::BUFFER,move |_,_| {
+                if limiter.lock().unwrap().allow(Instant::now(),fps) {gst::PadProbeReturn::Ok} else {gst::PadProbeReturn::Drop}
+            });
         self.pipeline.add(&bin)?;
         // Link before starting the bin, then bring it up to the pipeline's state.
         pad.link(&bin.static_pad("sink").context("decoder bin has no sink pad")?)?;
         bin.sync_state_with_parent()?;
         // The video sink sends pointer/keyboard navigation events upstream; turn them into input.
         let conv = bin.by_name("conv").context("no videoconvert")?;
+        let sid = self.sid;
+        conv.static_pad("src").context("no video output pad")?.add_probe(gst::PadProbeType::BUFFER, move |pad, _| {
+            if let Some(caps) = pad.current_caps() { println!("[{sid}] decoded video: {caps}"); }
+            gst::PadProbeReturn::Remove
+        });
         let w = Arc::downgrade(self);
-        conv.static_pad("src").context("no src pad")?.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+        bin.by_name("flip").context("no rotation filter")?.static_pad("src").context("no rotation output")?.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
             if let (Some(s), Some(gst::PadProbeData::Event(ev))) = (w.upgrade(), &info.data) {
                 if ev.type_() == gst::EventType::Navigation {
                     s.on_navigation(ev);
@@ -312,13 +426,30 @@ impl Session {
         Ok(())
     }
 
+    fn rotation(&self)->i64 {self.st.lock().unwrap().rotation}
+
+    fn set_rotation(&self, rot: i64) {
+        if self.renderer==desktop_renderer::Renderer::Scrcpy || self.pkg=="desktop" {return;}
+        let changed = std::mem::replace(&mut self.st.lock().unwrap().rotation, rot) != rot;
+        if changed {
+            println!("[{}] display rotation {rot}: turning the picture {}", self.sid, rotation::direction(rot, rotation::mode_from_env()));
+            self.apply_rotation(rot);
+        }
+    }
+
+    fn apply_rotation(&self, rot: i64) {
+        if let Some(flip) = self.flip.lock().unwrap().as_ref() {
+            flip.set_property_from_str("video-direction", rotation::direction(rot, rotation::mode_from_env()));
+        }
+    }
+
     fn set_title(&self, title: &str) {
         let changed = {
             let mut t = self.title.lock().unwrap();
             std::mem::replace(&mut *t, title.to_owned()) != title
         };
         if changed {
-            println!("[{}] title → {title}", self.sid);
+            println!("[{}] window title updated", self.sid);
             // taginject re-sends its tags downstream on the next buffer; glimagesink retitles the window.
             if let Some(tag) = self.tag.lock().unwrap().as_ref() {
                 tag.set_property("tags", title_tags(title));
@@ -363,7 +494,10 @@ impl Session {
         p.wait();
         let reply = p.get_reply().context("no answer")?;
         let answer = reply.value("answer")?.get::<gst_webrtc::WebRTCSessionDescription>()?;
-        let text = answer.sdp().as_text()?;
+        let text = quality::answer_sdp(&answer.sdp().as_text()?,self.quality);
+        let answer = gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Answer,
+            gst_sdp::SDPMessage::parse_buffer(text.as_bytes()).map_err(|_|anyhow!("bad quality SDP"))?);
+        if self.quality.custom() {println!("[{}] stream limits: bitrateKbps={:?} displayFps={:?}",self.sid,self.quality.bitrate_kbps,self.quality.fps);}
         self.webrtc.emit_by_name::<()>("set-local-description", &[&answer, &None::<gst::Promise>]);
         println!("[{}] answer: {} bytes, H.264={}", self.sid, text.len(), text.contains("H264"));
         self.d.send15(
@@ -404,14 +538,45 @@ impl Session {
 
     /// cmd 3 `width`/`height`: the size the phone currently streams (resize baseline).
     fn learn_stream_size(&self, body: &Value) {
+        if let Some(density) = body.get("density").and_then(Value::as_i64).filter(|v| *v > 0) {
+            self.st.lock().unwrap().stream_density = Some(density);
+        }
         let dim = |k: &str| body.get(k).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
         if let (Some(w), Some(h)) = (dim("width"), dim("height")) {
-            self.st.lock().unwrap().resize.set_stream_size(w, h);
+            if w > 0 && h > 0 {
+                let mut state = self.st.lock().unwrap();
+                state.resize.set_stream_size(w, h);
+                state.stream_size = Some((w, h));
+            }
         }
     }
 
     fn display_id(&self) -> Option<i64> {
         self.st.lock().unwrap().display_id
+    }
+
+    fn stream_size(&self) -> Option<(u32, u32)> {
+        self.st.lock().unwrap().stream_size
+    }
+
+    fn recover_video(&self, now: Instant) {
+        if self.headless || self.renderer==desktop_renderer::Renderer::Scrcpy { return; }
+        let Some(pad) = self.recovery_pad.lock().unwrap().clone() else { return };
+        if !self.progress.lock().unwrap().request_due(now) { return; }
+        let accepted = playback::request_keyframe(&pad);
+        warnln!("[{}] video recovery: requesting keyframe (accepted={accepted})", self.sid);
+    }
+
+    fn stream_density(&self) -> Option<i64> { self.st.lock().unwrap().stream_density }
+
+    fn render_stats(&self) -> Option<Value> {
+        let sink = self.sink.lock().unwrap().clone()?;
+        let renderer = if sink.find_property("stats").is_some() { sink }
+            else { sink.downcast::<gst::Bin>().ok()?.iterate_recurse().into_iter()
+                .filter_map(Result::ok).find(|element| element.find_property("stats").is_some())? };
+        let stats = renderer.property::<gst::Structure>("stats");
+        Some(json!({ "rendered":stats.get::<u64>("rendered").ok()?,
+            "dropped":stats.get::<u64>("dropped").ok()? }))
     }
 
     /// The phone reported the app focused/merged/raised on this session's display: for a background
@@ -429,11 +594,11 @@ impl Session {
 
     /// The window's size if it changed and settled (see resize.rs), as a cmd 17 payload.
     fn poll_resize(&self, x: &X11, instance_id: i64, now: Instant) -> Option<Value> {
-        if self.headless || self.pkg == "mirror" {
+        if self.headless || self.pkg == "mirror" || self.requested_display.is_some() {
             return None; // the phone never resizes the mirror display
         }
         let display_id = self.display_id()?;
-        let (win, _) = self.xwin.lock().unwrap().clone()?;
+        let (win, _, _) = self.xwin.lock().unwrap().clone()?;
         let size = x.window_size(win)?;
         let wanted = self.st.lock().unwrap().resize.observe(size, now)?;
         println!("[{}] window is {}x{}: asking the phone to resize display {display_id}", self.sid, wanted.0, wanted.1);
@@ -454,6 +619,9 @@ impl Session {
         use gst_video::NavigationEvent as N;
         let Some(d) = self.display_id() else { return };
         let Ok(nav) = N::parse(ev) else { return };
+        if matches!(&nav, N::MouseButtonPress { .. } | N::MouseScroll { .. } | N::KeyPress { .. }) {
+            self.progress.lock().unwrap().input(Instant::now());
+        }
         let pressed = matches!(nav, N::MouseButtonPress { .. } | N::KeyPress { .. });
         let input = |cmd, data| self.d.input(cmd, data);
         match nav {
@@ -534,7 +702,7 @@ impl Session {
         } else if down {
             match key_text(key) {
                 Some(text) => self.d.input(7, json!({ "displayId": d, "text": text })),
-                None => println!("[{}] input: unmapped key {key}", self.sid),
+                None => println!("[{}] input: unmapped keyboard key", self.sid),
             }
         }
     }
@@ -559,6 +727,7 @@ impl Session {
             }
             (st.display_id, std::mem::take(&mut st.held_mods))
         };
+        if let Some(link)=self.external.lock().unwrap().take(){link.stop();}
         println!("[{}] closing {} ({why})", self.sid, self.pkg);
         if tell_phone {
             if let Some(d) = d {
@@ -571,17 +740,53 @@ impl Session {
             }
             self.d.send15(7, Some(json!({ "sessionId": self.sid, "error": 0 })));
         }
-        let _ = self.pipeline.set_state(gst::State::Null);
+        // GL/driver cleanup can block for seconds. Do not freeze every host control request,
+        // heartbeat and other phone window while a single closed window releases its resources.
+        let pipeline = self.pipeline.clone();
+        std::thread::spawn(move || { let _ = pipeline.set_state(gst::State::Null); });
         true
+    }
+
+    fn external_state(&self)->Option<scrcpy::State> {
+        if self.renderer!=desktop_renderer::Renderer::Scrcpy{return None;}
+        Some(self.external.lock().unwrap().as_ref().map(|l|l.state()).unwrap_or_default())
+    }
+    fn poll_external(&self)->Option<(String,Option<String>)> {
+        if self.renderer!=desktop_renderer::Renderer::Scrcpy{return None;}
+        let mut link=self.external.lock().unwrap();
+        if link.is_none() {
+            if let Some(display_id)=self.display_id().filter(|_|self.st.lock().unwrap().answered) {
+                *link=Some(scrcpy::Link::start(scrcpy::Spec{display_id,phone_address:self.phone_address.clone(),
+                    options:self.scrcpy_options.clone(),quality:self.quality,borderless:self.borderless.load(Ordering::Relaxed),session_id:self.sid,
+                    fullscreen:self.fullscreen,
+                    window_size:if self.layout.fixed&&self.layout.fit!=stream_settings::FitAxis::Manual{self.stream_size()}else{None},
+                    title:if self.pkg=="desktop"{"Smart Connect Desktop (scrcpy)".into()}else{format!("{} (scrcpy)",self.title.lock().unwrap())}}));
+            } else if self.external_since.elapsed()>Duration::from_secs(25) {
+                return Some(("scrcpy display initialization timed out".into(),Some("The phone did not create the app or desktop display".into())));
+            }
+        }
+        let link=link.as_ref()?;
+        let state=link.state();
+        if state.phase=="running" && self.scrcpy_options.computer_ime {
+            if let Some(display)=self.display_id() {
+                for text in link.committed_text() {self.d.input(7,json!({"displayId":display,"text":text}));}
+            }
+        }
+        match state.phase {
+            "failed"=>Some(("scrcpy failed".into(),state.error)),
+            "stopped"=>Some(("scrcpy window closed".into(),None)),_=>None,
+        }
     }
 
     /// Window closed (the sink posts an error), stream ended, or ICE down for > 5 s.
     fn poll_dead(&self) -> Option<String> {
+        if self.window_closed.load(Ordering::Acquire) { return Some("video window closed".into()); }
         if let Some(bus) = self.pipeline.bus() {
             while let Some(msg) = bus.pop() {
                 match msg.view() {
                     gst::MessageView::Error(e) => return Some(format!("window closed or failed: {}", e.error())),
                     gst::MessageView::Eos(_) => return Some("end of stream".into()),
+                    gst::MessageView::Latency(_) => { let _ = self.pipeline.recalculate_latency(); }
                     _ => {}
                 }
             }
@@ -602,14 +807,19 @@ struct X11 {
     conn: x11rb::rust_connection::RustConnection,
     net_wm_name: u32,
     utf8: u32,
+    motif_hints: u32,
+    root:u32,net_clients:u32,net_pid:u32,
 }
 
 impl X11 {
     fn connect() -> Option<Self> {
         use x11rb::protocol::xproto::ConnectionExt as _;
-        let (conn, _) = x11rb::connect(None).ok()?;
+        use x11rb::connection::Connection as _;
+        let (conn, screen) = x11rb::connect(None).ok()?;
+        let root=conn.setup().roots.get(screen)?.root;
         let atom = |n: &str| conn.intern_atom(false, n.as_bytes()).ok()?.reply().ok().map(|r| r.atom);
-        Some(X11 { net_wm_name: atom("_NET_WM_NAME")?, utf8: atom("UTF8_STRING")?, conn })
+        Some(X11 { net_wm_name: atom("_NET_WM_NAME")?, utf8: atom("UTF8_STRING")?,
+            motif_hints: atom("_MOTIF_WM_HINTS")?, root,net_clients:atom("_NET_CLIENT_LIST")?,net_pid:atom("_NET_WM_PID")?,conn })
     }
 
     fn set_title(&self, win: u32, title: &str, first: bool) {
@@ -618,7 +828,7 @@ impl X11 {
         use x11rb::wrapper::ConnectionExt as _;
         let c = &self.conn;
         let _ = c.change_property8(PropMode::REPLACE, win, self.net_wm_name, self.utf8, title.as_bytes());
-        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes());
+        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, self.utf8, title.as_bytes());
         if first {
             let class = b"smartconnect-mirror\0smartconnect-mirror\0";
             let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, class);
@@ -626,11 +836,82 @@ impl X11 {
         let _ = c.flush();
     }
 
+    fn find_window(&self, title: &str) -> Option<u32> {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+        let named = |win: u32| -> bool {
+            [self.net_wm_name, AtomEnum::WM_NAME.into()].into_iter().any(|prop| {
+                self.conn
+                    .get_property(false, win, prop, AtomEnum::ANY, 0, 64)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .is_some_and(|r| r.value.starts_with(title.as_bytes()))
+            })
+        };
+        let root = self.conn.setup().roots.first()?.root;
+        let mut todo = vec![(root, 0u8)];
+        // The window manager may wrap the sink's window in a frame with the same title: take the
+        // innermost match, which is the one the sink draws in.
+        let mut found: Option<(u8, u32)> = None;
+        while let Some((win, depth)) = todo.pop() {
+            if win != root && named(win) && found.is_none_or(|(d, _)| depth > d) {
+                found = Some((depth, win));
+            }
+            if depth < 3 {
+                if let Some(tree) = self.conn.query_tree(win).ok().and_then(|c| c.reply().ok()) {
+                    todo.extend(tree.children.into_iter().map(|c| (c, depth + 1)));
+                }
+            }
+        }
+        found.map(|(_, win)| win)
+    }
+
+    fn resize_window(&self, win: u32, (w, h): (u32, u32)) {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt as _};
+        let _ = self.conn.configure_window(win, &ConfigureWindowAux::new().width(w).height(h));
+        let _ = self.conn.flush();
+    }
+
     /// The window's client-area size in pixels.
     fn window_size(&self, win: u32) -> Option<(u32, u32)> {
         use x11rb::protocol::xproto::ConnectionExt as _;
         let g = self.conn.get_geometry(win).ok()?.reply().ok()?;
         Some((u32::from(g.width), u32::from(g.height)))
+    }
+
+    fn window_for_pid(&self,pid:u32)->Option<u32> {
+        use x11rb::protocol::xproto::{ConnectionExt as _,AtomEnum};
+        let clients=self.conn.get_property(false,self.root,self.net_clients,AtomEnum::WINDOW,0,4096).ok()?.reply().ok()?;
+        clients.value32()?.find(|win|self.conn.get_property(false,*win,self.net_pid,AtomEnum::CARDINAL,0,1).ok().and_then(|c|c.reply().ok()).and_then(|r|r.value32().and_then(|mut v|v.next()))==Some(pid))
+    }
+
+    fn app_layout(&self, win:u32, size:(u32,u32), layout:stream_settings::Layout) {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConnectionExt as _,ConfigureWindowAux};
+        use x11rb::properties::{WmSizeHints,AspectRatio,WmSizeHintsSpecification};
+        let mut hints=WmSizeHints::get_normal_hints(&self.conn,win).ok().and_then(|c|c.reply().ok()).flatten().unwrap_or_default();
+        let ratio=AspectRatio{numerator:size.0 as i32,denominator:size.1 as i32};
+        hints.aspect=Some((ratio,ratio));
+        if layout.fit!=stream_settings::FitAxis::Manual {
+            // X11 geometry is in X-server pixels, not GTK logical coordinates. The GUI computed
+            // encoder dimensions from physical monitor pixels; matching them avoids resampling.
+            hints.size=Some((WmSizeHintsSpecification::UserSpecified,size.0 as i32,size.1 as i32));
+            hints.min_size=Some((size.0 as i32,size.1 as i32));hints.max_size=hints.min_size;
+            self.set_borderless(win,true);
+            let _=self.conn.configure_window(win,&ConfigureWindowAux::new().width(size.0).height(size.1));
+        }
+        let _=hints.set_normal_hints(&self.conn,win);let _=self.conn.flush();
+    }
+
+    fn set_borderless(&self, win: u32, borderless: bool) {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::PropMode;
+        use x11rb::wrapper::ConnectionExt as _;
+        // MWM_HINTS_DECORATIONS = 1<<1; decorations 0 removes the frame, 1 restores all.
+        let hints = [2, 0, if borderless { 0 } else { 1 }, 0, 0];
+        let _ = self.conn.change_property32(PropMode::REPLACE, win, self.motif_hints, self.motif_hints, &hints);
+        let _ = self.conn.flush();
     }
 }
 
@@ -648,22 +929,69 @@ fn gl_window_handle(sink: &gst::Element) -> u32 {
 }
 
 impl Session {
+    fn watch_window_close(&self) {
+        let mut watched = self.watched_window.lock().unwrap();
+        if watched.is_some() { return; }
+        // The sink installs its own callbacks during GL setup. Wait for its first completed
+        // frame before replacing the close callback, so setup cannot overwrite our observer.
+        if self.render_stats().and_then(|stats| stats["rendered"].as_u64()).unwrap_or(0) == 0 { return; }
+        let Some(sink) = self.sink.lock().unwrap().clone() else { return };
+        if sink.find_property("context").is_none() { return; }
+        let Some(context) = sink.property::<Option<gst_gl::GLContext>>("context") else { return };
+        use gst_gl::prelude::*;
+        let Some(window) = context.window() else { return };
+        window_close::watch(&window, &self.window_closed);
+        *watched = Some(window);
+    }
+    fn sync_window_shape(&self, x: &X11) {
+        if self.renderer==desktop_renderer::Renderer::Scrcpy || self.pkg=="desktop" || self.layout.fixed {return;}
+        let (rot, turned) = {
+            let st = self.st.lock().unwrap();
+            (st.rotation, st.window_turned)
+        };
+        let Some(size)=self.stream_size()else{return;};
+        let want = (size.0>size.1)^rotation::is_turned(rot,rotation::mode_from_env());
+        if Some(want) == turned || self.sink.lock().unwrap().is_none() {
+            return;
+        }
+        let known = self.xwin.lock().unwrap().as_ref().map(|(w, _, _)| *w);
+        let win = known.or_else(|| x.find_window(&self.title.lock().unwrap()));
+        let Some((win, (w, h))) = win.and_then(|win| Some((win, x.window_size(win)?))) else { return };
+        // Some sinks (xvimagesink) reshape their own window when the picture's shape changes;
+        // only a window still the wrong way round gets swapped. A stream is portrait unless turned.
+        if (w > h) != want {
+            println!("[{}] window {w}x{h} → {h}x{w} (display rotation {rot})", self.sid);
+            x.resize_window(win, (h, w));
+        }
+        self.st.lock().unwrap().window_turned = Some(want);
+    }
+
     /// Applies the current title to the X11 window (finds the window the first time).
     fn sync_x11_title(&self, x: &X11) {
         let title = self.title.lock().unwrap().clone();
+        let borderless = self.borderless.load(Ordering::Relaxed);
         let mut xw = self.xwin.lock().unwrap();
         match &mut *xw {
-            Some((win, last)) if *last != title => {
-                x.set_title(*win, &title, false);
+            Some((win, last, last_borderless)) if *last != title || *last_borderless != borderless => {
+                if *last != title { x.set_title(*win, &title, false); }
+                if *last_borderless != borderless { x.set_borderless(*win, borderless); }
                 *last = title;
+                *last_borderless = borderless;
             }
             Some(_) => {}
             None => {
-                let Some(sink) = self.sink.lock().unwrap().clone() else { return };
-                let win = gl_window_handle(&sink);
+                let win=if self.renderer==desktop_renderer::Renderer::Scrcpy {
+                    if !self.layout.fixed{return;}
+                    let Some(pid)=self.external_state().and_then(|state|state.pid)else{return;};
+                    let Some(win)=x.window_for_pid(pid)else{return;};win
+                }else{
+                    let Some(sink)=self.sink.lock().unwrap().clone()else{return;};gl_window_handle(&sink)
+                };
                 if win != 0 {
-                    x.set_title(win, &title, true);
-                    *xw = Some((win, title));
+                    x.set_title(win, &title, self.renderer!=desktop_renderer::Renderer::Scrcpy);
+                    if self.pkg == "desktop" { x.set_borderless(win, borderless); }
+                    if self.layout.fixed {if let Some(size)=self.stream_size(){x.app_layout(win,size,self.layout);}}
+                    *xw = Some((win, title, borderless));
                 }
             }
         }
@@ -712,6 +1040,21 @@ struct StartReq {
     name: Option<String>,
     /// Answer without a window and close once the phone ran the notification action.
     headless: bool,
+    display: Option<app_display::AppDisplay>,
+    quality: stream_settings::Quality,
+    layout: stream_settings::Layout,
+    renderer: desktop_renderer::Renderer,
+    fullscreen: bool,
+    scrcpy_options: desktop_renderer::ScrcpyOptions,
+}
+
+enum PreparedStart {
+    App(StartReq),
+    Desktop,
+}
+struct PendingWake {
+    action: PreparedStart,
+    task: scrcpy::WakePreparation,
 }
 
 struct Host {
@@ -731,6 +1074,19 @@ struct Host {
     last_resize_poll: Instant,
     /// The desktop resolution from the phone's last view invite (used for the "desktop" stream).
     view_resolution: Option<(i64, i64)>,
+    desktop_scale: u32,
+    desktop_borderless: bool,
+    desktop_quality: stream_settings::Quality,
+    desktop_renderer: desktop_renderer::Renderer,
+    desktop_fullscreen: bool,
+    app_errors: HashMap<String,String>,
+    desktop_scrcpy: desktop_renderer::ScrcpyOptions,
+    desktop_error: Option<String>,
+    desktop_pending: bool,
+    mirror_pending: bool,
+    cancelled_starts: HashMap<String, Instant>,
+    wakes: HashMap<String,PendingWake>,
+    wake_start: fn(desktop_renderer::ScrcpyOptions,Option<String>)->scrcpy::WakePreparation,
     /// One-shot process: quit once its sessions are gone.
     exit_when_idle: bool,
     sessions: HashMap<i64, Arc<Session>>,
@@ -738,6 +1094,7 @@ struct Host {
     inflight: Option<(StartReq, Instant)>,
     had_session: bool,
     last_hb: Instant,
+    last_log_stats: Instant,
     /// pkg → app name (svc 17 list, cmd 2 pkgName, cmd 13 appName).
     names: HashMap<String, String>,
     apps: Value,
@@ -746,6 +1103,9 @@ struct Host {
 }
 
 impl Host {
+    fn borderless_supported(&self) -> bool {
+        self.x11.is_some() && pick_sink().split_whitespace().next() == Some("glimagesink")
+    }
     fn title_for(&self, pkg: &str) -> String {
         if let Some(t) = views::title(pkg) {
             return t.into();
@@ -759,6 +1119,62 @@ impl Host {
 
     fn by_display(&self, d: i64) -> Option<Arc<Session>> {
         self.sessions.values().find(|s| s.display_id() == Some(d)).cloned()
+    }
+
+    fn pending_packages(&self) -> Vec<String> {
+        let mut packages: Vec<_> = self.queue.iter().map(|r|r.pkg.clone())
+            .chain(self.inflight.iter().map(|(r,_)|r.pkg.clone())).collect();
+        if self.desktop_pending { packages.push("desktop".into()); }
+        if self.mirror_pending { packages.push("mirror".into()); }
+        packages.extend(self.wakes.keys().cloned());
+        packages.sort(); packages.dedup(); packages
+    }
+
+    fn cancel_start(&mut self, pkg: &str) {
+        let active_view=views::is_view_pkg(pkg) && (self.pending_packages().iter().any(|p|p==pkg)
+            || self.sessions.values().any(|s|s.pkg==pkg));
+        self.cancelled_starts.insert(pkg.to_owned(), Instant::now());
+        self.wakes.remove(pkg);
+        self.queue.retain(|r|r.pkg!=pkg);
+        if self.inflight.as_ref().is_some_and(|(r,_)|r.pkg==pkg) { self.inflight=None; }
+        if pkg=="desktop" { self.desktop_pending=false; self.desktop_error=None; }
+        if pkg=="mirror" { self.mirror_pending=false; }
+        self.app_errors.remove(pkg);
+        let sessions:Vec<_>=self.sessions.values().filter(|s|s.pkg==pkg&&!s.headless).map(|s|s.sid).collect();
+        for sid in sessions { self.close_session(sid,"startup cancelled",true); }
+        if active_view { self.d.send(1,json!({"ver":"1.0.0","cmd":5})); }
+        self.pump();
+    }
+
+    fn prepare_start(&mut self,pkg:&str,options:desktop_renderer::ScrcpyOptions,action:PreparedStart) {
+        if !options.wake_unlock {self.run_prepared_start(action);return;}
+        println!("ADB preflight: waking/unlocking before starting {pkg}");
+        let address=daemon_status().and_then(|s|s["phoneAddress"].as_str().map(str::to_owned));
+        self.wakes.insert(pkg.into(),PendingWake{action,task:(self.wake_start)(options,address)});
+    }
+    fn run_prepared_start(&mut self,action:PreparedStart) {
+        match action {
+            PreparedStart::App(request)=>self.request(request,false),
+            PreparedStart::Desktop=>{
+                if let Some(size)=self.view_resolution {self.d.send(1,views::desktop_resolution(size));}
+                println!("asking the phone to start Ready For desktop");
+                self.d.send(1,views::start(2));
+            }
+        }
+    }
+    fn poll_wakes(&mut self) {
+        let done:Vec<_>=self.wakes.iter().filter_map(|(pkg,p)|p.task.result().map(|r|(pkg.clone(),r))).collect();
+        for (pkg,result) in done {
+            let Some(pending)=self.wakes.remove(&pkg)else{continue;};
+            match result {
+                Ok(())=>{println!("ADB preflight: phone ready for {pkg}");self.run_prepared_start(pending.action);}
+                Err(error)=>{
+                    eprintln!("ADB preflight failed for {pkg}: {error}");
+                    if pkg=="desktop" {self.desktop_pending=false;self.desktop_error=Some(error);}
+                    else{self.app_errors.insert(pkg,error);}
+                }
+            }
+        }
     }
 
     fn request(&mut self, r: StartReq, front: bool) {
@@ -789,7 +1205,8 @@ impl Host {
         if let Some((r, _)) = self.inflight.take() {
             eprintln!("start of {} timed out", r.pkg);
         }
-        let Some(r) = self.queue.pop_front() else { return };
+        let Some(mut r) = self.queue.pop_front() else { return };
+        if r.pkg=="desktop" {r.quality=self.desktop_quality;r.renderer=self.desktop_renderer;r.fullscreen=self.desktop_fullscreen;r.scrcpy_options=self.desktop_scrcpy.clone();}
         println!("requesting stream: pkg {} cmp {} source {}", r.pkg, r.cmp, r.source);
         // The size is the bound the phone fits the stream into. For Ready For desktop it is the
         // desktop resolution, so use the one the user picked on the phone when we know it.
@@ -811,6 +1228,15 @@ impl Host {
             data["cmp"] = r.cmp.clone();
             data["shortcutId"] = r.shortcut_id.clone();
         }
+        if r.pkg == "desktop" {
+            for (key, value) in views::desktop_display((w,h), self.desktop_scale).as_object().unwrap() {
+                data[key] = value.clone();
+            }
+        }
+        if let Some(display)=r.display.filter(|_| !r.headless && !views::is_view_pkg(&r.pkg)) {
+            for (key,value) in display.wire().as_object().unwrap() { data[key]=value.clone(); }
+            println!("custom app display: {}x{} density={}",display.width,display.height,display.density);
+        }
         self.d.send15(1, Some(data));
         self.inflight = Some((r, Instant::now()));
     }
@@ -819,6 +1245,10 @@ impl Host {
         if self.inflight.as_ref().is_some_and(|(r, _)| r.pkg == pkg) {
             if !ok {
                 eprintln!("could not start {pkg}: {why}");
+                let error=if why.starts_with("reason 147 ") {"Phone confirmation timed out; unlock the phone and try again"}else{"The phone refused the stream; see mirroring logs"}.to_owned();
+                if pkg=="desktop" {self.desktop_pending=false;self.desktop_error=Some(error);}
+                else if pkg=="mirror" {self.mirror_pending=false;}
+                else {self.app_errors.insert(pkg.to_owned(),error);}
             }
             self.inflight = None;
             self.pump();
@@ -827,6 +1257,7 @@ impl Host {
 
     fn close_session(&mut self, sid: i64, why: &str, tell_phone: bool) {
         if let Some(s) = self.sessions.remove(&sid) {
+            if s.pkg=="desktop"{self.desktop_pending=false;}
             s.close(why, tell_phone);
         }
     }
@@ -849,6 +1280,11 @@ impl Host {
         let body = msg.get("data").cloned().unwrap_or(Value::Null);
         let sid = body.get("sessionId").and_then(Value::as_i64);
         let pkg = body.get("pkg").and_then(Value::as_str).unwrap_or("").to_owned();
+        if matches!(cmd,2|3|8) && self.cancelled_starts.contains_key(&pkg) {
+            if let Some(sid)=sid { self.d.send15(7,Some(json!({"sessionId":sid,"error":0}))); }
+            println!("ignored late cancelled start for {pkg}");
+            return Ok(());
+        }
         let mine = sid.and_then(|s| self.sessions.get(&s).cloned());
         let shown = |d: Option<i64>, me: &Self| d.and_then(|d| me.by_display(d));
         // The stream invite (cmd 2) and focus changes (cmd 13) carry the app's icon as base64 PNG:
@@ -888,6 +1324,12 @@ impl Host {
                         source: body.get("source").and_then(Value::as_i64).unwrap_or(1),
                         name: body.get("pkgName").and_then(Value::as_str).map(str::to_owned),
                         headless,
+                        display: None,
+        quality: Default::default(),
+        layout: Default::default(),
+        renderer: Default::default(),
+        fullscreen:false,
+        scrcpy_options: Default::default(),
                     },
                     true,
                 );
@@ -909,6 +1351,12 @@ impl Host {
                             user_id: body.get("userId").cloned().unwrap_or(json!(0)),
                             cmp: field("cmp", req.map(|r| &r.cmp)),
                             shortcut_id: field("shortcutId", req.map(|r| &r.shortcut_id)),
+                            requested_display: req.and_then(|r|r.display),
+                            quality: req.map(|r|r.quality).unwrap_or_default(),
+                            layout: req.map(|r|r.layout).unwrap_or_default(),
+                            renderer: req.map(|r|r.renderer).unwrap_or_default(),
+                            fullscreen:req.is_some_and(|r|r.fullscreen),
+                            scrcpy_options: req.map(|r|r.scrcpy_options.clone()).unwrap_or_default(),
                             title: self.title_for(&pkg),
                             headless,
                         };
@@ -922,6 +1370,9 @@ impl Host {
                             if headless { " (headless)" } else { "" }
                         );
                         let s = Session::new(info, filter, self.d.clone())?;
+                        if pkg=="mirror" { self.mirror_pending=false; }
+                        if pkg == "desktop" { self.desktop_pending=false;s.borderless.store(self.desktop_borderless, Ordering::Relaxed); }
+                        else if s.layout.fit!=stream_settings::FitAxis::Manual {s.borderless.store(true,Ordering::Relaxed);}
                         self.sessions.insert(sid, s.clone());
                         self.had_session = true;
                         self.finish_inflight(&pkg, true, "");
@@ -1014,6 +1465,7 @@ impl Host {
                 if let Some(s) = mine {
                     println!("[{}] cmd {cmd}: rotation {} display {}", s.sid, body["rotation"], body["displayId"]);
                     s.learn_display(&body);
+                    if let Some(rotation)=body["rotation"].as_i64(){s.set_rotation(rotation);}
                 }
             }
             26 => {
@@ -1025,7 +1477,7 @@ impl Host {
             10 | 21 => {} // heartbeat ack, audio app list
             _ => {
                 if self.own_apps || mine.is_some() {
-                    println!("svc15 cmd {cmd} {}", truncate(&body.to_string(), 300));
+                    println!("svc15 cmd {cmd} received");
                 }
             }
         }
@@ -1036,6 +1488,10 @@ impl Host {
         // cmd 0: the user started a view on the phone (Screen share / Mobile desktop tile, phone
         // cards). The phone waits 20 s for our cmd 1, then invites the stream on svc 15.
         if let Some(inv) = views::parse_invite(msg) {
+            if self.cancelled_starts.contains_key(views::view_pkg(inv.view).unwrap_or("")) {
+                self.d.send(1,json!({"ver":"1.0.0","cmd":5}));
+                return Ok(());
+            }
             if self.answer_views {
                 let pkg = views::view_pkg(inv.view).unwrap_or("?");
                 println!("phone asks to start {pkg} (view {}, resolution {:?}): accepting", inv.view, inv.resolution);
@@ -1049,7 +1505,12 @@ impl Host {
         let cmd = msg.get("cmd").and_then(Value::as_i64);
         // 5 = stop/cancel, 11 = error: the phone ended (or refused) the view.
         if self.own_mirror && matches!(cmd, Some(5 | 11)) {
-            println!("svc1 cmd {} {}", cmd.unwrap_or(0), truncate(&msg.to_string(), 300));
+            self.mirror_pending=false;
+            if self.desktop_pending {
+                self.desktop_pending=false;
+                if cmd==Some(11){self.desktop_error=Some("The phone refused desktop mode; unlock it and try again".into());}
+            }
+            println!("svc1 cmd {} received", cmd.unwrap_or(0));
             let ended: Vec<i64> =
                 self.sessions.values().filter(|s| views::is_view_pkg(&s.pkg)).map(|s| s.sid).collect();
             for sid in ended {
@@ -1097,19 +1558,81 @@ impl Host {
 
     fn on_ctl(&mut self, v: &Value) -> Value {
         match v.get("cmd").and_then(Value::as_str).unwrap_or("") {
+            "capabilities" => json!({ "ok": true, "appResolution": true, "streamQuality": true, "desktopScrcpy": true, "appScrcpy": true, "scrcpyFullscreen": true, "cancelStart": true, "adbWakeUnlock": true, "foldMouse": true, "scrcpyAudio": true, "independentAudio": true, "scrcpyInputSettings": true, "computerIme": computer_ime::available(), "displayRotation": true, "appLayout": self.borderless_supported(), "desktopResolution": true, "desktopScaling": true, "desktopBorderless": self.borderless_supported() }),
+            "cancel" => {
+                let Some(pkg)=v.get("pkg").and_then(Value::as_str).filter(|s|!s.is_empty()&&s.len()<=255) else {
+                    return json!({"ok":false,"message":"cancel needs pkg"});
+                };
+                self.cancel_start(pkg);
+                json!({"ok":true})
+            }
+            "desktop_window" => {
+                let Some(borderless) = v.get("borderless").and_then(Value::as_bool) else {
+                    return json!({"ok":false,"message":"desktop_window needs a boolean borderless"});
+                };
+                if borderless && !self.borderless_supported() {
+                    return json!({"ok":false,"message":"borderless desktop needs the default XWayland renderer"});
+                }
+                if self.sessions.values().any(|s|s.pkg=="desktop"&&s.renderer==desktop_renderer::Renderer::Scrcpy){
+                    return json!({"ok":false,"message":"Restart the scrcpy desktop to change window decorations"});
+                }
+                self.desktop_borderless = borderless;
+                for session in self.sessions.values().filter(|s| s.pkg == "desktop") {
+                    session.borderless.store(borderless, Ordering::Relaxed);
+                }
+                json!({"ok":true})
+            }
             "app" => {
                 let Some(pkg) = v.get("pkg").and_then(Value::as_str) else {
                     return json!({ "ok": false, "message": "app needs pkg" });
                 };
+                let renderer=match desktop_renderer::Renderer::from_request(v){Ok(r)=>r,Err(e)=>return json!({"ok":false,"message":e})};
+                let scrcpy_options=match desktop_renderer::ScrcpyOptions::from_request(v){Ok(o)=>o,Err(e)=>return json!({"ok":false,"message":e})};
+                let quality=match stream_settings::Quality::from_request(v) {Ok(q)=>q,Err(e)=>return json!({"ok":false,"message":e})};
+                let layout=match stream_settings::Layout::from_request(v) {Ok(l)=>l,Err(e)=>return json!({"ok":false,"message":e})};
+                if layout.fixed && !self.borderless_supported() {return json!({"ok":false,"message":"Fixed app aspect ratio needs the default XWayland renderer"});}
+                let display=match app_display::from_request(v) {
+                    Ok(display)=>display, Err(error)=>return json!({"ok":false,"message":error}),
+                };
+                if layout.fixed && display.is_none() {return json!({"ok":false,"message":"Fixed aspect ratio requires custom app resolution"});}
+                if let Some(d)=display.filter(|_|layout.fixed) {
+                    if layout.width_for_height(d.height).is_none_or(|w|w.abs_diff(d.width)>2) {return json!({"ok":false,"message":"App resolution does not match the fixed aspect ratio"});}
+                }
+                if (display.is_some() || quality.custom() || layout.fixed || renderer==desktop_renderer::Renderer::Scrcpy || scrcpy_options.wake_unlock) && views::is_view_pkg(pkg) { return json!({"ok":false,"message":"Use desktop settings for view sessions"}); }
                 if let Some(s) = self.sessions.values().find(|s| s.pkg == pkg && !s.headless) {
+                    if s.requested_display != display || s.quality!=quality || s.layout!=layout || s.renderer!=renderer || s.scrcpy_options!=scrcpy_options { return json!({"ok":false,"message":"Close this app window before changing its stream settings"}); }
                     raise_window(s.title.lock().unwrap().clone());
                 }
-                self.request(start_req_for(pkg, v.get("cmp").and_then(Value::as_str), &self.apps), false);
+                if self.inflight.as_ref().map(|(r,_)|r).into_iter().chain(self.queue.iter())
+                    .any(|r|r.pkg==pkg && (r.display!=display || r.quality!=quality || r.layout!=layout || r.renderer!=renderer || r.scrcpy_options!=scrcpy_options)) { return json!({"ok":false,"message":"This app is already starting with different display settings"}); }
+                if self.wakes.contains_key(pkg) {return json!({"ok":false,"message":"This app is already starting"});}
+                let mut request=start_req_for(pkg, v.get("cmp").and_then(Value::as_str), &self.apps);
+                self.cancelled_starts.remove(pkg);
+                self.app_errors.remove(pkg);
+                request.display=display;request.quality=quality;request.layout=layout;request.renderer=renderer;request.scrcpy_options=scrcpy_options;
+                let options=request.scrcpy_options.clone();
+                self.prepare_start(pkg,options,PreparedStart::App(request));
                 json!({ "ok": true, "message": "requested" })
             }
-            "sessions" => json!({ "ok": true, "sessions": self.sessions.values().map(|s| json!({
+            "sessions" => json!({ "ok": true, "desktopError":self.desktop_error,"desktopPending":self.desktop_pending,"mirrorPending":self.mirror_pending,"pending":self.pending_packages(),"adbPreparing":self.wakes.keys().collect::<Vec<_>>(),"appErrors":self.app_errors, "sessions": self.sessions.values().map(|s| json!({
                 "sessionId": s.sid, "pkg": s.pkg, "displayId": s.display_id(), "title": *s.title.lock().unwrap(),
                 "headless": s.headless,
+                "borderless": s.borderless.load(Ordering::Relaxed),
+                "renderStats": s.render_stats(),
+                "density": s.stream_density(),
+                "requestedScale": if s.pkg == "desktop" { Some(self.desktop_scale) } else { None },
+                "videoProgress": s.progress.lock().unwrap().snapshot(Instant::now()),
+                "streamTiming": s.timing.lock().unwrap().snapshot(),
+                "requestedQuality": s.quality, "requestedLayout": s.layout,
+                "renderer":s.renderer,"rotation":s.rotation(),"fullscreen":s.fullscreen,"requestedScrcpy":s.scrcpy_options,"scrcpyState":s.external_state().map(|state|state.phase),
+                "scrcpyPid":s.external_state().and_then(|state|state.pid),
+                "displayRateDropped": s.frame_limiter.lock().unwrap().dropped,
+                "jitterStats": stream_timing::jitter_stats(&s.pipeline),
+                "udpReceiveBuffers": s.receive_buffers.lock().unwrap().sizes(),
+                "width": s.stream_size().map(|size| size.0), "height": s.stream_size().map(|size| size.1),
+                "requestedWidth": if s.pkg == "desktop" { self.view_resolution.map(|size| size.0) } else { s.requested_display.map(|p| i64::from(p.width)) },
+                "requestedHeight": if s.pkg == "desktop" { self.view_resolution.map(|size| size.1) } else { s.requested_display.map(|p| i64::from(p.height)) },
+                "requestedDensity": s.requested_display.map(|p|p.density),
             })).collect::<Vec<_>>() }),
             "close" => match v.get("sessionId").and_then(Value::as_i64) {
                 Some(sid) if self.sessions.contains_key(&sid) => {
@@ -1120,17 +1643,62 @@ impl Host {
             },
             "apps" => json!({ "ok": true, "apps": self.apps }),
             "mirror" => {
+                self.cancelled_starts.remove("mirror");self.mirror_pending=true;
                 println!("asking the phone to start mirroring");
                 self.d.send(1, views::start(1));
                 json!({ "ok": true, "message": "requested" })
             }
             "desktop" => {
-                println!("asking the phone to start Ready For desktop");
-                self.d.send(1, views::start(2));
+                let renderer=match desktop_renderer::Renderer::from_request(v){Ok(r)=>r,Err(e)=>return json!({"ok":false,"message":e})};
+                let scrcpy_options=match desktop_renderer::ScrcpyOptions::from_request(v){Ok(o)=>o,Err(e)=>return json!({"ok":false,"message":e})};
+                let fullscreen=match v.get("fullscreen"){None=>false,Some(value)=>match value.as_bool(){Some(value)=>value,None=>return json!({"ok":false,"message":"Fullscreen must be a boolean"})}};
+                let fullscreen=fullscreen&&renderer==desktop_renderer::Renderer::Scrcpy;
+                let quality=match stream_settings::Quality::from_request(v) {Ok(q)=>q,Err(e)=>return json!({"ok":false,"message":e})};
+                let size = match views::requested_desktop_size(v) {
+                    Ok(size) => size,
+                    Err(error) => return json!({ "ok": false, "message": error.to_string() }),
+                };
+                let scale = match views::requested_desktop_scale(v) {
+                    Ok(scale) => scale,
+                    Err(error) => return json!({"ok":false,"message":error.to_string()}),
+                };
+                let borderless = match v.get("borderless") {
+                    Some(value) => match value.as_bool() {
+                        Some(value) => value,
+                        None => return json!({"ok":false,"message":"desktop needs a boolean borderless"}),
+                    },
+                    None => self.desktop_borderless,
+                };
+                if renderer==desktop_renderer::Renderer::Builtin && borderless && !self.borderless_supported() {
+                    return json!({"ok":false,"message":"borderless desktop needs the default XWayland renderer"});
+                }
+                if let Some(session) = self.sessions.values().find(|s| s.pkg == "desktop") {
+                    if (size.is_some() && size != self.view_resolution) || scale != self.desktop_scale || quality != self.desktop_quality || renderer!=self.desktop_renderer || fullscreen!=self.desktop_fullscreen || (renderer==desktop_renderer::Renderer::Scrcpy&&scrcpy_options!=self.desktop_scrcpy) {
+                        return json!({ "ok": false, "message": "Close the desktop session before changing its resolution, scaling or quality" });
+                    }
+                    self.desktop_borderless = borderless;
+                    session.borderless.store(borderless, Ordering::Relaxed);
+                    raise_window(session.title.lock().unwrap().clone());
+                    return json!({ "ok": true, "message": "already running" });
+                }
+                if self.sessions.values().any(|s| s.pkg == "mirror" || s.pkg == "mobile") {
+                    return json!({ "ok": false, "message": "close screen mirroring or virtual phone before starting desktop mode" });
+                }
+                if self.wakes.contains_key("desktop") || self.inflight.as_ref().is_some_and(|(r,_)|r.pkg=="desktop") {
+                    return json!({"ok":false,"message":"Desktop mode is already starting"});
+                }
+                self.cancelled_starts.remove("desktop");
+                self.desktop_error=None;self.desktop_pending=true;
+                self.desktop_renderer=renderer;self.desktop_fullscreen=fullscreen;self.desktop_scrcpy=scrcpy_options;
+                self.desktop_quality = quality;
+                self.view_resolution = size;
+                self.desktop_scale = scale;
+                self.desktop_borderless = borderless;
+                self.prepare_start("desktop",self.desktop_scrcpy.clone(),PreparedStart::Desktop);
                 json!({ "ok": true, "message": "requested" })
             }
             _ => {
-                json!({ "ok": false, "message": "commands: app {pkg,cmp?}, sessions, close {sessionId}, apps, mirror, desktop" })
+                json!({ "ok": false, "message": "commands: app {pkg,cmp?}, sessions, close {sessionId}, apps, mirror, desktop {width?,height?}, capabilities" })
             }
         }
     }
@@ -1138,6 +1706,19 @@ impl Host {
     /// Periodic work on the main loop.
     fn tick(&mut self) {
         let now = Instant::now();
+        self.poll_wakes();
+        for session in self.sessions.values() {
+            session.receive_buffers.lock().unwrap().update(&session.pipeline);
+            session.watch_window_close();
+            session.recover_video(now);
+        }
+        self.cancelled_starts.retain(|_,since| now.duration_since(*since)<Duration::from_secs(30));
+        let external_done:Vec<_>=self.sessions.values().filter_map(|s|s.poll_external().map(|(why,error)|(s.sid,s.pkg.clone(),why,error))).collect();
+        for (sid,pkg,why,error) in external_done {
+            if pkg=="desktop"{self.desktop_error=error;}else if let Some(error)=error {self.app_errors.insert(pkg,error);}
+
+            self.close_session(sid,&why,true);
+        }
         let dead: Vec<(i64, String)> =
             self.sessions.values().filter_map(|s| s.poll_dead().map(|w| (s.sid, w))).collect();
         for (sid, why) in dead {
@@ -1151,14 +1732,30 @@ impl Host {
         if let Some(x) = &self.x11 {
             for s in self.sessions.values() {
                 s.sync_x11_title(x);
+                s.sync_window_shape(x);
             }
             if self.resize && now.duration_since(self.last_resize_poll) >= RESIZE_POLL {
                 self.last_resize_poll = now;
                 for s in self.sessions.values() {
-                    if let Some(req) = s.poll_resize(x, self.instance_id, now) {
+                    if let Some(mut req) = s.poll_resize(x, self.instance_id, now) {
+                        if s.pkg == "desktop" {
+                            let size = (req["width"].as_i64().unwrap(), req["height"].as_i64().unwrap());
+                            for (key, value) in views::desktop_display(size, self.desktop_scale).as_object().unwrap() {
+                                req[key] = value.clone();
+                            }
+                        }
                         self.d.send15(17, Some(req));
                     }
                 }
+            }
+        }
+        if now.duration_since(self.last_log_stats) >= Duration::from_secs(5) {
+            self.last_log_stats = now;
+            for session in self.sessions.values().filter(|session| !session.headless) {
+                let progress = session.progress.lock().unwrap().snapshot(now);
+                diagnostics::record("INFO", &format!("[{}] stats pkg={} renderer={:?} size={:?} density={:?} render={} progress={progress} timing={} jitter={}",session.sid,session.pkg,session.renderer,
+                    session.stream_size(),session.stream_density(),session.render_stats().unwrap_or(Value::Null),
+                    session.timing.lock().unwrap().snapshot(),stream_timing::jitter_stats(&session.pipeline)));
             }
         }
         // One heartbeat covers every session of this PC.
@@ -1179,12 +1776,7 @@ impl Host {
     }
 }
 
-fn truncate(s: &str, n: usize) -> &str {
-    match s.char_indices().nth(n) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
+
 
 /// svc 17 cmd 1 → `[{pkg,name,cmp,userId,iconName,work}]` (personal + work-profile apps; the
 /// download token/port are dropped). `iconName` is the file name the GUI looks up in the icon cache.
@@ -1236,6 +1828,12 @@ fn start_req_for(pkg: &str, cmp: Option<&str>, apps: &Value) -> StartReq {
         source: 0,
         name: known.as_ref().and_then(|a| a["name"].as_str()).map(str::to_owned),
         headless: false,
+        display: None,
+        quality: Default::default(),
+        layout: Default::default(),
+        renderer: Default::default(),
+        fullscreen:false,
+        scrcpy_options: Default::default(),
     }
 }
 
@@ -1286,18 +1884,22 @@ const BINDINGS: &str = "keys: everything is sent as real key presses (Ctrl+C/V/A
   Ctrl+Alt+R     → RECENTS (app switcher)
   Super combos are usually taken by the desktop compositor.";
 
-const USAGE: &str = "usage: smartconnect-mirror [--host [--resize] | --desktop | --app PKG [CMP] | --list-apps | --sessions | --close SESSIONID]
+const USAGE: &str = "usage: smartconnect-mirror [--host [--resize] | --desktop [--size WxH] [--borderless] | --app PKG [CMP] | --list-apps | --sessions | --close SESSIONID]
   (no args)        mirror the whole phone screen
   --desktop        Ready For desktop on a phone virtual display (experimental)
+  --size WxH       with --desktop: request a landscape resolution, e.g. 1920x1080
+  --borderless     with --desktop: hide the window title bar and borders (XWayland)
   --host           stay up: open a window for every stream the phone starts here (notification
                    Open, App streaming / Screen share / Mobile desktop tiles, hand-off), run
                    notification action buttons without a window, and accept requests on
                    $XDG_RUNTIME_DIR/smartconnect-mirror.sock
   --resize         (with --host) ask the phone to resize app displays to their windows (experimental;
                    also SMARTCONNECT_MIRROR_RESIZE=1)
-  --app PKG [CMP]  stream one phone app (through the host when one runs)
+  --app PKG [CMP] [--size WxH] [--dpi DPI]  stream one app, optionally on a custom display
   --list-apps [--json]  print the phone's launchable apps (pkg, userId, name, cmp; --json: one JSON array)
   --sessions       print the host's open sessions (JSON)
+  --logs           show recent sanitized diagnostic logs (works while stopped)
+  --log-path       print the diagnostic log path
   --close SID      close one host session
 environment:
   SMARTCONNECT_BACKGROUND_ACTIONS=0   notification action buttons open a window like Open does
@@ -1404,13 +2006,29 @@ fn list_apps(json: bool) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let result = run();
+    if let Err(error) = &result { diagnostics::record("ERROR", &format!("{error:#}")); }
+    diagnostics::flush();
+    result
+}
+
+fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().map(String::as_str).unwrap_or("");
+    let app_options=if mode=="--app" {
+        args.get(1).context("--app needs a package name")?;
+        Some(app_display::cli_options(&args[2..]).map_err(|error|anyhow!(error))?)
+    } else { None };
+    let (desktop_size, desktop_borderless) = if mode == "--desktop" {
+        views::desktop_cli_options(&args[1..])?
+    } else { (None, false) };
     match mode {
         "-h" | "--help" => {
             println!("{USAGE}");
             return Ok(());
         }
+        "--logs" => { std::println!("{}", mirror_log::read_recent(mirror_log::VIEW_LIMIT)?); return Ok(()); }
+        "--log-path" => { std::println!("{}", mirror_log::path().display()); return Ok(()); }
         "--list-apps" => return list_apps(args.get(1).is_some_and(|a| a == "--json")),
         "--sessions" => {
             let r = host_call(&json!({ "cmd": "sessions" })).context("no host running")?;
@@ -1425,10 +2043,17 @@ fn main() -> Result<()> {
         "--app" => {
             let pkg = args.get(1).context("--app needs a package name")?;
             let mut req = json!({ "cmd": "app", "pkg": pkg });
-            if let Some(cmp) = args.get(2) {
-                req["cmp"] = json!(cmp);
+            let (component,display)=app_options.as_ref().unwrap();
+            if let Some(cmp) = component { req["cmp"] = json!(cmp); }
+            if let Some(display)=display {
+                let caps=host_call(&json!({"cmd":"capabilities"}));
+                if caps.is_some() && caps.as_ref().is_none_or(|value|value["appResolution"]!=true) {
+                    bail!("the running stream host does not support custom app resolution; restart it");
+                }
+                req["width"]=json!(display.width);req["height"]=json!(display.height);req["density"]=json!(display.density);
             }
             if let Some(r) = host_call(&req) {
+                if r["ok"]!=true {bail!("{}",r["message"].as_str().unwrap_or("app request failed"));}
                 println!("host: {r}");
                 return Ok(());
             }
@@ -1437,7 +2062,24 @@ fn main() -> Result<()> {
         // A running host owns the views too (one process, one instanceId, no double answers).
         "" | "--desktop" => {
             let cmd = if mode.is_empty() { "mirror" } else { "desktop" };
-            if let Some(r) = host_call(&json!({ "cmd": cmd })) {
+            let mut request = json!({ "cmd": cmd });
+            if mode == "--desktop" { request["borderless"] = json!(desktop_borderless); }
+            if desktop_borderless {
+                let caps = host_call(&json!({"cmd":"capabilities"}));
+                if caps.is_some() && caps.as_ref().is_none_or(|caps| caps["desktopBorderless"] != true) {
+                    bail!("the running stream host does not support borderless desktop windows");
+                }
+            }
+            if let Some((width, height)) = desktop_size {
+                let caps = host_call(&json!({ "cmd": "capabilities" }));
+                if caps.is_some() && caps.as_ref().is_none_or(|v| v["desktopResolution"] != true) {
+                    bail!("the running stream host does not support desktop resolution settings; restart it");
+                }
+                request["width"] = json!(width);
+                request["height"] = json!(height);
+            }
+            if let Some(r) = host_call(&request) {
+                if r["ok"] != true { bail!("{}", r["message"].as_str().unwrap_or("request failed")); }
                 println!("host: {r}");
                 return Ok(());
             }
@@ -1446,7 +2088,7 @@ fn main() -> Result<()> {
         other => bail!("unknown argument {other}\n{USAGE}"),
     }
     for extra in args.iter().skip(1).filter(|a| a.starts_with("--") && mode != "--app") {
-        if !(mode == "--host" && extra == "--resize") {
+        if !(mode == "--host" && extra == "--resize" || mode == "--desktop" && matches!(extra.as_str(), "--size" | "--borderless")) {
             eprintln!("ignoring unknown argument {extra} for {mode:?}");
         }
     }
@@ -1460,7 +2102,9 @@ fn main() -> Result<()> {
         // SAFETY: single-threaded here, before GStreamer or any other thread starts.
         unsafe { std::env::set_var("GST_GL_WINDOW", "x11") };
     }
+    diagnostics::init();
     gst::init()?;
+    diagnostics::attach_gstreamer();
     let main_loop = glib::MainLoop::new(None, false);
 
     let (tx, rx) = mpsc::channel::<Ev>();
@@ -1484,18 +2128,26 @@ fn main() -> Result<()> {
         actions: actions::PendingActions::default(),
         resize,
         last_resize_poll: Instant::now(),
-        view_resolution: None,
+        view_resolution: desktop_size,
+        desktop_scale: 100,
+        desktop_borderless,
+        desktop_quality: Default::default(),
+        desktop_renderer: Default::default(),desktop_fullscreen:false,app_errors:HashMap::new(),desktop_scrcpy:Default::default(),desktop_error:None,desktop_pending:false,mirror_pending:false,cancelled_starts:HashMap::new(),wakes:HashMap::new(),wake_start:scrcpy::WakePreparation::start,
         exit_when_idle: !is_host,
         sessions: HashMap::new(),
         queue: VecDeque::new(),
         inflight: None,
         had_session: false,
         last_hb: Instant::now(),
+        last_log_stats: Instant::now(),
         names: HashMap::new(),
         apps: load_apps(),
-        x11: X11::connect(),
+        x11: if std::env::var("GST_GL_WINDOW").as_deref() == Ok("x11") { X11::connect() } else { None },
         main_loop: main_loop.clone(),
     }));
+    if desktop_borderless && !host.borrow().borderless_supported() {
+        bail!("borderless desktop needs the default XWayland renderer");
+    }
     {
         let mut h = host.borrow_mut();
         let apps = h.apps.clone();
@@ -1550,12 +2202,14 @@ fn main() -> Result<()> {
         }
         "--desktop" => {
             println!("asking the phone to start Ready For desktop");
+            if let Some(size) = desktop_size { d.send(1, views::desktop_resolution(size)); }
             d.send(1, views::start(2));
         }
         "--app" => {
-            let cmp = args.get(2).map(String::as_str);
+            let (component,display)=app_options.as_ref().unwrap();
             let mut h = host.borrow_mut();
-            let r = start_req_for(&args[1], cmp, &h.apps);
+            let mut r = start_req_for(&args[1], component.as_deref(), &h.apps);
+            r.display=*display;
             h.request(r, false);
         }
         _ => println!(
@@ -1607,12 +2261,17 @@ mod tests {
             resize: false,
             last_resize_poll: Instant::now(),
             view_resolution: None,
+            desktop_scale: 100,
+            desktop_borderless: false,
+            desktop_quality: Default::default(),
+        desktop_renderer: Default::default(),desktop_fullscreen:false,app_errors:HashMap::new(),desktop_scrcpy:Default::default(),desktop_error:None,desktop_pending:false,mirror_pending:false,cancelled_starts:HashMap::new(),wakes:HashMap::new(),wake_start:scrcpy::WakePreparation::pending_for_test,
             exit_when_idle: false,
             sessions: HashMap::new(),
             queue: VecDeque::new(),
             inflight: None,
             had_session: false,
             last_hb: Instant::now(),
+            last_log_stats: Instant::now(),
             names: HashMap::new(),
             apps: json!([]),
             x11: None,
@@ -1641,6 +2300,245 @@ mod tests {
 
     fn invite(pkg: &str) -> Value {
         json!({ "ver": "1", "cmd": 2, "data": { "deviceId": "<phone-id>", "pkg": pkg, "pkgName": "Example", "source": 1, "userId": 0, "cmp": null } })
+    }
+
+    #[test]
+    fn adb_wake_precedes_phone_start_and_cancel_cannot_start_it_later() {
+        let (mut host,theirs)=test_host(true);
+        let req=json!({"cmd":"app","pkg":"com.example.notes","renderer":"builtin","scrcpy":{"wakeUnlock":true}});
+        assert_eq!(host.on_ctl(&req)["ok"],true);
+        assert!(host.inflight.is_none());assert!(sent(&theirs).is_empty());
+        assert_eq!(host.pending_packages(),vec!["com.example.notes"]);
+        host.wakes["com.example.notes"].task.finish_for_test(Ok(()));host.poll_wakes();
+        assert_eq!(host.inflight.as_ref().unwrap().0.pkg,"com.example.notes");assert_eq!(sent(&theirs).len(),1);
+        host.inflight=None;
+        host.on_ctl(&json!({"cmd":"desktop","scrcpy":{"wakeUnlock":true}}));
+        assert!(host.desktop_pending);assert!(sent(&theirs).is_empty());
+        host.cancel_start("desktop");host.poll_wakes();assert!(!host.desktop_pending);assert!(host.wakes.is_empty());
+        assert!(!sent(&theirs).iter().any(|(svc,v)|*svc==1&&v["cmd"]==1));
+    }
+
+    #[test]
+    fn wake_failure_stops_before_phone_commands_and_keeps_other_errors() {
+        let (mut host,theirs)=test_host(true);
+        host.app_errors.insert("com.example.other".into(),"unchanged".into());
+        host.on_ctl(&json!({"cmd":"desktop","scrcpy":{"wakeUnlock":true}}));
+        host.wakes["desktop"].task.finish_for_test(Err("Unlock the phone on the device to continue".into()));
+        host.poll_wakes();assert!(!host.desktop_pending);assert!(host.desktop_error.is_some());
+        assert!(host.inflight.is_none());assert_eq!(host.app_errors["com.example.other"],"unchanged");assert!(sent(&theirs).is_empty());
+    }
+
+    #[test]
+    #[ignore="requires an X11/XWayland desktop session"]
+    fn unicode_titles_preserve_utf8_in_both_x11_properties() {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt,AtomEnum,CreateWindowAux,WindowClass};
+        let x=X11::connect().expect("X11 connection");let win=x.conn.generate_id().unwrap();
+        x.conn.create_window(0,win,x.root,0,0,64,64,0,WindowClass::INPUT_OUTPUT,0,&CreateWindowAux::new()).unwrap().check().unwrap();
+        let title="中文计算器 — Phone 🧮";x.set_title(win,title,true);
+        for property in [x.net_wm_name,u32::from(AtomEnum::WM_NAME)] {
+            let value=x.conn.get_property(false,win,property,AtomEnum::ANY,0,1024).unwrap().reply().unwrap();
+            assert_eq!(value.type_,x.utf8);assert_eq!(std::str::from_utf8(&value.value).unwrap(),title);
+        }
+        x.conn.destroy_window(win).unwrap().check().unwrap();
+    }
+
+    #[test]
+    fn cancelling_absent_view_does_not_stop_another_pending_view() {
+        let (mut host,theirs)=test_host(true);
+        host.on_ctl(&json!({"cmd":"mirror"}));let _=sent(&theirs);
+        host.on_ctl(&json!({"cmd":"cancel","pkg":"desktop"}));
+        assert!(host.mirror_pending);assert!(sent(&theirs).is_empty());
+    }
+
+    #[test]
+    fn phone_confirmation_failure_clears_pending_and_reports_the_app_error() {
+        let (mut host,theirs)=test_host(true);
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.one"}));
+        host.on_frame(15,&json!({"cmd":8,"data":{"pkg":"com.example.one","state":0,"reason":147}})).unwrap();
+        assert!(host.pending_packages().is_empty());
+        assert_eq!(host.app_errors["com.example.one"],"Phone confirmation timed out; unlock the phone and try again");
+        assert!(host.desktop_error.is_none());let _=sent(&theirs);
+    }
+
+    #[test]
+    fn cancel_drops_queued_start_without_interrupting_other_app() {
+        let (mut host,theirs)=test_host(true);
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.one"}));
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.two"}));
+        assert_eq!(host.pending_packages(),vec!["com.example.one","com.example.two"]);
+        assert_eq!(host.on_ctl(&json!({"cmd":"cancel","pkg":"com.example.two"}))["ok"],true);
+        assert!(host.queue.is_empty());assert_eq!(host.inflight.as_ref().unwrap().0.pkg,"com.example.one");
+        assert_eq!(sent(&theirs).len(),1);
+    }
+
+    #[test]
+    fn cancelled_late_offer_is_closed_without_answering_or_creating_a_session() {
+        let (mut host,theirs)=test_host(true);
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.one"}));
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.two"}));
+        host.on_ctl(&json!({"cmd":"cancel","pkg":"com.example.one"}));
+        assert_eq!(host.inflight.as_ref().unwrap().0.pkg,"com.example.two");
+        host.on_frame(15,&json!({"cmd":3,"data":{"pkg":"com.example.one","sessionId":81,"webRTCData":"{}"}})).unwrap();
+        host.on_frame(15,&invite("com.example.one")).unwrap();
+        assert!(host.sessions.is_empty());assert!(host.queue.is_empty());
+        let frames=sent(&theirs);
+        assert!(frames.iter().any(|(svc,v)|*svc==15&&v["cmd"]==7&&v["data"]["sessionId"]==81));
+        assert!(!frames.iter().any(|(_,v)|v["cmd"]==4));
+    }
+
+    #[test]
+    fn cancel_view_clears_waiting_state_and_retry_is_explicit() {
+        let (mut host,theirs)=test_host(true);
+        host.on_ctl(&json!({"cmd":"desktop","renderer":"scrcpy"}));
+        assert!(host.desktop_pending);
+        host.on_ctl(&json!({"cmd":"cancel","pkg":"desktop"}));
+        assert!(!host.desktop_pending);assert!(host.desktop_error.is_none());
+        host.on_frame(1,&json!({"cmd":0,"view":2})).unwrap();
+        host.on_frame(15,&invite("desktop")).unwrap();assert!(host.inflight.is_none());
+        host.on_ctl(&json!({"cmd":"desktop","renderer":"scrcpy"}));
+        host.on_frame(15,&invite("desktop")).unwrap();assert!(host.inflight.is_some());
+        host.on_ctl(&json!({"cmd":"mirror"}));assert!(host.mirror_pending);
+        host.on_ctl(&json!({"cmd":"cancel","pkg":"mirror"}));assert!(!host.mirror_pending);
+        assert!(sent(&theirs).iter().any(|(svc,v)|*svc==1&&v["cmd"]==5));
+    }
+
+    #[test]
+    fn custom_app_geometry_is_exact_and_does_not_leak_to_other_queued_apps() {
+        let (mut host,theirs)=test_host(true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"capabilities"}))["appResolution"],true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"app","pkg":"com.example.one","width":720,"height":1280,"density":240}))["ok"],true);
+        let out=sent(&theirs);let data=&out[0].1["data"];
+        assert_eq!(data["width"],720);assert_eq!(data["displayHeight"],1280);
+        assert_eq!(data["displayDensity"],240);assert_eq!(data["supportCustomDisplay"],true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"app","pkg":"com.example.one","width":1080,"height":1920}))["ok"],false);
+        assert!(sent(&theirs).is_empty());
+        assert_eq!(host.on_ctl(&json!({"cmd":"app","pkg":"com.example.two"}))["ok"],true);
+        host.inflight=None;host.pump();let out=sent(&theirs);let data=&out[0].1["data"];
+        assert_eq!(data["supportCustomDisplay"],false);assert_eq!(data["width"],1920);
+        assert_eq!(data["displayDensity"],160);
+    }
+
+    #[test]
+    fn scrcpy_app_profile_is_queued_independently_and_clears_only_its_error() {
+        let (mut host,theirs)=test_host(true);
+        host.desktop_error=Some("desktop error".into());host.app_errors.insert("com.example.test".into(),"app error".into());
+        assert_eq!(host.on_ctl(&json!({"cmd":"app","pkg":"com.example.test","renderer":"scrcpy","width":1080,"height":1920,"quality":{"fps":30},"scrcpy":{"softwareDecode":true}}))["ok"],true);
+        let req=&host.inflight.as_ref().unwrap().0;
+        assert_eq!(req.renderer,desktop_renderer::Renderer::Scrcpy);assert!(!req.fullscreen);assert!(req.scrcpy_options.software_decode);assert_eq!(req.quality.fps,Some(30));
+        assert!(host.app_errors.is_empty());assert_eq!(host.desktop_error.as_deref(),Some("desktop error"));
+        host.inflight=None;
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","renderer":"scrcpy","fullscreen":true}))["ok"],true);
+        host.on_frame(15,&invite("desktop")).unwrap();assert!(host.inflight.as_ref().unwrap().0.fullscreen);
+        let _=sent(&theirs);
+    }
+
+    #[test]
+    fn scrcpy_desktop_settings_are_validated_and_stay_out_of_app_starts() {
+        let (mut host,theirs)=test_host(true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"capabilities"}))["desktopScrcpy"],true);
+        for value in [json!({"cmd":"desktop","renderer":"other"}),json!({"cmd":"desktop","renderer":"scrcpy","scrcpy":{"adbPort":0}})] {
+            assert_eq!(host.on_ctl(&value)["ok"],false);
+        }
+        assert!(sent(&theirs).is_empty());
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","renderer":"scrcpy","borderless":true,"scrcpy":{"softwareDecode":true}}))["ok"],true);
+        assert!(host.desktop_pending);
+        host.on_frame(15,&invite("desktop")).unwrap();
+        let start=&host.inflight.as_ref().unwrap().0;
+        assert_eq!(start.renderer,desktop_renderer::Renderer::Scrcpy);assert!(!start.headless);assert!(start.scrcpy_options.software_decode);
+        host.inflight=None;
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.app"}));
+        assert_eq!(host.inflight.as_ref().unwrap().0.renderer,desktop_renderer::Renderer::Builtin);
+        let _=sent(&theirs);
+    }
+
+    #[test]
+    fn invalid_quality_and_unsupported_layout_send_nothing() {
+        let (mut host,theirs)=test_host(true);
+        for value in [json!({"cmd":"app","pkg":"com.example.test","quality":{"fps":0}}),
+            json!({"cmd":"desktop","quality":{"bitrateKbps":1}}),
+            json!({"cmd":"app","pkg":"com.example.test","layout":{"fixed":true}})] {
+            assert_eq!(host.on_ctl(&value)["ok"],false);
+        }
+        assert!(sent(&theirs).is_empty());assert!(host.inflight.is_none());
+    }
+    #[test]
+    fn desktop_and_app_quality_are_kept_with_their_own_queued_start() {
+        let (mut host,theirs)=test_host(true);
+        let q=json!({"bitrateKbps":2000,"fps":15});
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","quality":q}))["ok"],true);
+        host.on_frame(15,&invite("desktop")).unwrap();
+        assert_eq!(host.inflight.as_ref().unwrap().0.quality.fps,Some(15));
+        host.inflight=None;
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.test","quality":{"fps":30}}));
+        assert_eq!(host.inflight.as_ref().unwrap().0.quality.fps,Some(30));
+        assert_eq!(host.inflight.as_ref().unwrap().0.quality.bitrate_kbps,None);
+        host.inflight=None;
+        host.on_ctl(&json!({"cmd":"app","pkg":"com.example.automatic"}));
+        assert!(!host.inflight.as_ref().unwrap().0.quality.custom());
+        let _=sent(&theirs);
+    }
+
+    #[test]
+    fn invalid_app_custom_sizes_fail_before_phone_commands() {
+        let (mut host,theirs)=test_host(true);
+        for request in [json!({"cmd":"app","pkg":"com.example.one","width":721,"height":1280}),
+            json!({"cmd":"app","pkg":"com.example.one","density":320}),
+            json!({"cmd":"app","pkg":"mirror","width":720,"height":1280})] {
+            assert_eq!(host.on_ctl(&request)["ok"],false);
+        }
+        assert!(sent(&theirs).is_empty());assert!(host.queue.is_empty());assert!(host.inflight.is_none());
+    }
+
+    #[test]
+    fn desktop_control_sets_phone_resolution_and_stream_bound_without_affecting_apps() {
+        let (mut host, theirs) = test_host(true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"capabilities"}))["desktopResolution"], true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","width":1280,"height":720,"scale":200}))["ok"], true);
+        host.on_frame(15, &invite("desktop")).unwrap();
+        let out = sent(&theirs);
+        assert_eq!(out.len(), 3);
+        assert_eq!((out[0].0, out[0].1["cmd"].as_i64()), (1,Some(33)));
+        assert_eq!(out[0].1["resolution"], json!({"width":1280,"height":720}));
+        assert_eq!((out[1].0, out[1].1["view"].as_i64()), (1,Some(2)));
+        assert_eq!(out[1].1["reply"], 0);
+        assert_eq!(out[2].1["data"]["width"], 1280);
+        assert_eq!(out[2].1["data"]["height"], 720);
+        assert_eq!(out[2].1["data"]["displayDensity"], 320);
+        assert_eq!(out[2].1["data"]["displayScale"], 2.0);
+        host.inflight = None;
+        host.on_frame(15, &invite("com.example.app")).unwrap();
+        let out = sent(&theirs);
+        assert_eq!(out[0].1["data"]["width"], 1920);
+        assert_eq!(out[0].1["data"]["height"], 1080);
+        assert_eq!(out[0].1["data"]["displayDensity"], 160);
+        assert_eq!(out[0].1["data"]["displayScale"], 1.0);
+    }
+
+    #[test]
+    fn invalid_desktop_control_sends_nothing_and_default_clears_previous_size() {
+        let (mut host, theirs) = test_host(true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","width":1281,"height":720}))["ok"], false);
+        assert!(sent(&theirs).is_empty());
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","scale":999}))["ok"],false);
+        assert!(sent(&theirs).is_empty());
+        host.view_resolution = Some((2560,1440));
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop"}))["ok"], true);
+        assert_eq!(host.view_resolution, None);
+        let out = sent(&theirs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1["cmd"], 1);
+    }
+
+    #[test]
+    fn borderless_rejects_invalid_or_unsupported_requests_without_sending_to_phone() {
+        let (mut host, theirs) = test_host(true);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop_window","borderless":"yes"}))["ok"], false);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop_window","borderless":true}))["ok"], false);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","borderless":true}))["ok"], false);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop","borderless":1}))["ok"], false);
+        assert_eq!(host.on_ctl(&json!({"cmd":"desktop_window","borderless":false}))["ok"], true);
+        assert!(sent(&theirs).is_empty());
     }
 
     #[test]

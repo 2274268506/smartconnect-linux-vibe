@@ -354,6 +354,7 @@ pub fn spawn_collector(daemon: Arc<Daemon>) {
     }
     let mut rx = daemon.from_phone.subscribe();
     tokio::spawn(async move {
+        // Consume phone-pushed updates; content sync is requested explicitly by control commands.
         loop {
             match rx.recv().await {
                 Ok((svc, data)) => {

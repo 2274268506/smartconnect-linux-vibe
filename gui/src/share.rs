@@ -18,6 +18,8 @@
 //! [`RESTART_DELAY`]) if it ends while the phone is still connected, e.g. after a daemon restart.
 //! Quit stops it ([`ShareSection::shutdown`], called from the Files page's own shutdown).
 
+use crate::i18n::tr;
+
 use std::cell::RefCell;
 use std::fs::File;
 use std::path::PathBuf;
@@ -99,7 +101,7 @@ fn spawn_serve(dir: &std::path::Path, hidden: bool, read_only: bool) -> Result<C
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log2))
         .spawn()
-        .map_err(|e| format!("Could not start {}: {e}", bin.display()))
+        .map_err(|e| crate::tr_format!("Could not start {}: {e}", "无法启动 {}：{e}", bin.display()))
 }
 
 struct State {
@@ -129,26 +131,26 @@ pub struct ShareSection {
 impl ShareSection {
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
         let switch = adw::SwitchRow::builder()
-            .title("Share a folder with the phone")
-            .subtitle("The phone can browse it in its Files app while it's connected")
+            .title(tr("Share a folder with the phone"))
+            .subtitle(tr("The phone can browse it in its Files app while it's connected"))
             .build();
-        let folder = adw::ActionRow::builder().title("Shared folder").use_markup(false).build();
-        let open = gtk::Button::builder().icon_name("folder-open-symbolic").tooltip_text("Open the shared folder").valign(gtk::Align::Center).css_classes(["flat"]).build();
-        let change = gtk::Button::builder().label("Change…").valign(gtk::Align::Center).build();
+        let folder = adw::ActionRow::builder().title(tr("Shared folder")).use_markup(false).build();
+        let open = gtk::Button::builder().icon_name("folder-open-symbolic").tooltip_text(tr("Open the shared folder")).valign(gtk::Align::Center).css_classes(["flat"]).build();
+        let change = gtk::Button::builder().label(tr("Change…")).valign(gtk::Align::Center).build();
         folder.add_suffix(&open);
         folder.add_suffix(&change);
         let hidden = adw::SwitchRow::builder()
-            .title("Include hidden files")
-            .subtitle("Files and folders whose names start with a dot, such as ~/.ssh")
+            .title(tr("Include hidden files"))
+            .subtitle(tr("Files and folders whose names start with a dot, such as ~/.ssh"))
             .build();
         let delete = adw::SwitchRow::builder()
-            .title("Let the phone delete files")
-            .subtitle("Deleted files go to the Trash, so you can restore them")
+            .title(tr("Let the phone delete files"))
+            .subtitle(tr("Deleted files go to the Trash, so you can restore them"))
             .build();
-        let status = adw::ActionRow::builder().title("Status").use_markup(false).subtitle_selectable(true).build();
+        let status = adw::ActionRow::builder().title(tr("Status")).use_markup(false).subtitle_selectable(true).build();
         let group = adw::PreferencesGroup::builder()
-            .title("Share with the phone")
-            .description("The phone sees the folder in its Files app and in Smart Connect's Files tab. It can open and copy files, but not change them.")
+            .title(tr("Share with the phone"))
+            .description(tr("The phone sees the folder in its Files app and in Smart Connect's Files tab. It can open and copy files, but not change them."))
             .build();
         group.add(&switch);
         group.add(&folder);
@@ -294,7 +296,7 @@ impl ShareSection {
         let p = prefs::load().files;
         let dir = p.share_path();
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.st.borrow_mut().error = Some(format!("Could not create {}: {e}", dir.display()));
+            self.st.borrow_mut().error = Some(crate::tr_format!("Could not create {}: {e}", "无法创建 {}：{e}", dir.display()));
             self.refresh();
             return;
         }
@@ -399,7 +401,7 @@ impl ShareSection {
                 let log = std::fs::read_to_string(log_path()).unwrap_or_default();
                 match milestone(&log) {
                     Milestone::PhoneConnected => {
-                        "The phone has the folder: Smart Connect's Files tab, or the phone's Files app.".to_owned()
+                        tr("The phone has the folder: Smart Connect's Files tab, or the phone's Files app.").to_owned()
                     }
                     Milestone::Offered => {
                         let since = *st.offered_at.get_or_insert_with(Instant::now);
@@ -414,13 +416,13 @@ impl ShareSection {
                     Milestone::Waiting | Milestone::Starting => "Waiting for the phone…".to_owned(),
                 }
             } else if let Some(e) = &st.error {
-                format!("Stopped: {e}")
+                crate::tr_format!("Stopped: {e}", "已停止：{e}")
             } else if !p.share {
-                "Off".to_owned()
+                tr("Off").to_owned()
             } else if !st.connected {
                 "Starts when the phone connects".to_owned()
             } else {
-                "Starting…".to_owned()
+                tr("Starting…").to_owned()
             }
         };
         self.status.set_subtitle(&text);
@@ -429,20 +431,20 @@ impl ShareSection {
     fn open_folder(&self, button: &gtk::Button) {
         let dir = prefs::load().files.share_path();
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.toast(&format!("Could not create {}: {e}", dir.display()));
+            self.toast(&crate::tr_format!("Could not create {}: {e}", "无法创建 {}：{e}", dir.display()));
             return;
         }
         let parent = button.root().and_downcast::<gtk::Window>();
         let toasts = self.toasts.clone();
         gtk::FileLauncher::new(Some(&gio::File::for_path(&dir))).launch(parent.as_ref(), gio::Cancellable::NONE, move |res| {
             if let Err(e) = res {
-                toasts.add_toast(adw::Toast::new(&format!("Could not open the folder: {e}")));
+                toasts.add_toast(adw::Toast::new(&crate::tr_format!("Could not open the folder: {e}", "无法打开文件夹：{e}")));
             }
         });
     }
 
     fn choose_folder(self: &Rc<Self>, button: &gtk::Button) {
-        let dialog = gtk::FileDialog::builder().title("Choose the folder to share").accept_label("Share folder").build();
+        let dialog = gtk::FileDialog::builder().title(tr("Choose the folder to share")).accept_label("Share folder").build();
         dialog.set_initial_folder(Some(&gio::File::for_path(prefs::load().files.share_path())));
         let parent = button.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
@@ -454,7 +456,7 @@ impl ShareSection {
                         s.save_dir(&path.display().to_string());
                     }
                 }
-                Err(e) if !e.matches(gtk::DialogError::Dismissed) => s.toast(&format!("Could not choose a folder: {e}")),
+                Err(e) if !e.matches(gtk::DialogError::Dismissed) => s.toast(&crate::tr_format!("Could not choose a folder: {e}", "无法选择文件夹：{e}")),
                 Err(_) => {}
             }
         });

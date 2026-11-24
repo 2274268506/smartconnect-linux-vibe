@@ -262,3 +262,106 @@ Mistakes that cost the most debugging time so far. The full details are in the
 
 Logs and captures from your own phone contain personal data. Never commit them or paste them into
 issues unredacted (see [CONTRIBUTING.md](../CONTRIBUTING.md#privacy-rules)).
+
+## Additional streaming and GUI regression checks
+
+Video-stall recovery regression (local GStreamer encoder/decoder; no phone required):
+
+```sh
+cargo test --release -p smartconnect-mirror --locked playback::tests
+```
+
+This includes lost RTP plus suppressed keyframe feedback, a long encoder keyframe interval,
+and verification that bounded retry restores decoding. Timing tests ensure static idle video
+does not trigger recovery and repeated input cannot bypass the retry cap.
+
+UDP receive-buffer integration tests create real libnice/GSocket objects locally:
+
+```sh
+cargo test --release -p smartconnect-mirror --locked receive_buffer::tests
+```
+
+The mirror links libnice directly; install its development/linker files when the distribution
+separates them from the runtime plugin. The tests respect the host's `net.core.rmem_max`.
+
+Desktop app-scaling controls can be checked with a desktop session and isolated
+`XDG_CONFIG_HOME`/`XDG_DATA_HOME` (as in the other GTK tests):
+
+```sh
+cargo test --release -p smartconnect-gui --locked mobile_desktop::tests::app_scaling_saves_separately_and_requires_desktop_restart -- --ignored --exact
+```
+
+It verifies persistence, automatic monitor scaling, restart availability and isolation from
+PC-to-phone Display preferences without starting a phone stream.
+
+Mirroring diagnostic tests cover transport/address redaction, timestamp preservation, bounded
+rotation with private permissions and text/severity filtering. Run the normal GUI/mirror suites.
+The log-viewer integration test needs a desktop session and an isolated `XDG_STATE_HOME`:
+
+```sh
+cargo test --release -p smartconnect-gui --locked logs::tests::live_log_view_search_pause_resume_close_and_reopen -- --ignored --exact
+```
+
+It checks live updates, search, pause/resume, filtered export with private permissions, close
+and reopen. Keep real logs and exported diagnostics outside the repository.
+
+Custom app geometry tests cover dimension/DPI boundaries, CLI parsing, queue isolation,
+automatic-mode defaults and raw preference-field preservation. The GTK dialog test requires
+a desktop session and isolated `XDG_CONFIG_HOME`/`XDG_DATA_HOME`:
+
+```sh
+cargo test --release -p smartconnect-gui --locked app_resolution::tests::custom_app_geometry_validates_and_saves_without_changing_other_modes -- --ignored --exact
+```
+
+It validates presets, invalid-width Save disabling, DPI persistence and isolation from desktop,
+display, language and recent-app preferences without launching phone apps.
+
+App layout/quality regression coverage includes even-size physical fit calculations, unsupported
+sizes, independent automatic bitrate/FPS, SDP media scoping, decoded-frame rate limiting and
+queue isolation. The isolated app dialog test also checks fixed-ratio fit and oversized fits;
+the desktop settings test checks separate quality persistence. Runtime measurements must
+separate requested, received, decoded and presented rates; do not infer end-to-end latency
+or encoder acceptance from saved preferences.
+
+The scrcpy backend has regression tests for ADB parsing/selection, authorization/ambiguity,
+argument mapping, bounded preparation cancellation, missing executables, first-frame detection
+and owned-child reaping without stopping another process. Fake tools are temporary test scripts;
+normal suites do not contact a phone. The existing isolated desktop settings GTK test now covers
+backend/device/port/software-decode persistence and invalid settings. Actual-device checks should
+verify one visible scrcpy window, no owner GL decoder, close/Stop cleanup, failure cleanup and
+switching back to built-in mode. Raw logs/captures remain outside the repository.
+
+The `i18n-macros/` workspace crate checks formatted translation arguments through Rust's `format!`. GUI `fr.json`, `es.json` and `zh_cn.json` are embedded catalogs; translation does not use a network service. Add English source keys and matching translated placeholders when changing UI text. Catalog tests check coverage and numbered dynamic placeholders; formatted values retain Rust precision and are evaluated once. New preferences default to English; existing explicit choices are retained.
+
+Run `cargo test --release -p smartconnect-i18n-macros -p smartconnect-gui -p smartconnect-mirror --locked`. The three isolated GTK app-settings, desktop-settings and language-switch tests additionally cover scrcpy options and all four languages; run each with isolated XDG directories as described above. Real-device checks for this extension cover desktop fullscreen geometry, app native fit and quality flags, viewer-close cleanup, isolated app failures, and built-in app rendering.
+
+Pending-start regressions cover queued cancellation without interrupting another app, rejecting late offers before SDP/pipeline creation, explicit retry, view stop messages, and cancellation before any host is started. Two isolated GTK tests exercise desktop/app Cancel before a session exists:
+
+```sh
+cargo test --release -p smartconnect-gui --locked mobile_desktop::tests::startup_cancel_is_available_before_a_session_and_clears_async_state -- --ignored --exact
+cargo test --release -p smartconnect-gui --locked apps::tests::app_preparation_has_cancel_before_a_session_exists -- --ignored --exact
+```
+
+Use separate private `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` and **XDG_RUNTIME_DIR** for each case; the tests must not see the real mirror socket. Provide a desktop session (e.g. X11 via DISPLAY/GDK_BACKEND=x11). See `mirror/android/README.md` for regenerating the embedded helper. Real-device verification must confirm that the phone remains physically folded, the inner screen stays off, the capture produces visible content, and cancellation removes the source, viewer, helper and temporary upload.
+
+ADB preflight regressions use fake tools and a controllable task factory: wake/dismiss/verify ordering without a scrcpy executable, protected-lock refusal, unknown-state refusal, cancellation interrupting an ADB check, no phone start before success, and error isolation. Normal tests never wake a real phone. Existing isolated app/desktop GTK settings tests additionally check the new switch, persistence, and ADB validation under the built-in renderer.
+
+Unicode title properties have an X11 integration check:
+
+```sh
+cargo test --release -p smartconnect-mirror --locked tests::unicode_titles_preserve_utf8_in_both_x11_properties -- --ignored --exact
+```
+
+It creates only a temporary local window, checks UTF8_STRING and exact Chinese/emoji bytes on both title properties, and destroys the window. Real-device checks should additionally inspect a Chinese scrcpy app caption on KDE and confirm ADB preparation precedes phone stream setup. Protected-lock behavior is simulated in ordinary tests; do not inject credentials for testing.
+
+Folded-mouse tests cover default/opt-out persistence, Android/scrcpy/source-version gating, unknown-SDK fallback, emitted UHID/SDK mouse arguments and independent UHID/SDK keyboard flags. The isolated app/desktop settings tests verify the switch saves independently. Real-device validation must keep the phone folded and exercise pointer movement and clicks that change app content, keyboard input, capture release, display association and cleanup; visible video alone does not prove input works.
+
+The open-PR integration is recorded in `.notes/upstream-pr-integration.md`. New tests cover strict clipboard metadata, cable profile/invite policy, TLS cable handshake, confirmed-cable endpoint learning, Messages cache-only command selection and draft retention, and native rotation. Optional desktop tests include `messages::tests::disconnect_clears_message_previews_without_requesting_phone_data` and `playback::tests::gpu_rotation_negotiates_upright_dimensions_for_every_quarter_turn` (isolated XDG directories for GTK; `GST_GL_WINDOW=x11` for GL). SMS tests use synthetic data; do not send a real SMS or alter unread state to validate the UI. NetworkManager profile tests inspect arguments only and do not configure the real network.
+
+Input settings regressions also cover old-preference defaults, strict 25–400% speed validation, independent phone-IME selection and child-local SDL sensitivity. The isolated app/desktop GTK checks exercise save/reopen and sensitivity when compatibility mode is disabled. For real-device verification, use a harmless text field rather than messaging, inspect source-associated UHID input, and verify candidate composition without recording private text.
+
+`mirror/native/computer_ime.c` is an original SDL3 event adapter, compiled by `mirror/build.rs` when native SDL3 headers are available. `computer_ime` tests check Unicode ordering, malformed/oversize packet rejection, synthetic SDL Wait/Poll commits, exactly-once consumption and temporary-file cleanup. Isolated GTK tests verify app/desktop computer-mode persistence and phone-mode sensitivity. Real-device checks should compose harmless text in Settings, restore the computer IME state and close only owned test streams; never use a messaging send action.
+
+Scrcpy audio regressions cover old settings defaulting to enabled, boolean validation, mutually exclusive output/no-audio arguments, absence of microphone/require-audio flags, and independent app/desktop GUI persistence. Device validation should check the owned scrcpy playback stream without recording private audio or changing system-wide volume/mute settings.
+
+Independent audio tests cover output/playback/no-audio precedence, Android 13 SDK gating including unknown SDK failure, independent app/desktop persistence and disabling the control while audio is off. Device verification should compare ordinary media at phone media volume zero/nonzero without recording private audio; the shell tone helper used for earlier diagnostics did not establish a meaningful media signal. Do not treat an active desktop playback node as proof of audible volume independence.

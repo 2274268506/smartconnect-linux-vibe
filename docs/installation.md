@@ -77,7 +77,7 @@ What each feature needs on the desktop side:
 | Clipboard | `wl-copy`/`wl-paste` from wl-clipboard. Linux-to-phone sync uses `wl-paste --watch`, which needs a compositor with the data-control protocol (check with `wl-paste --watch echo changed`); where it is missing, as on GNOME, the daemon follows the clipboard through Xwayland instead (`DISPLAY` must be set, Xwayland enabled). |
 | Notifications | A notification daemon on the session bus (`org.freedesktop.Notifications`): Noctalia, mako, dunst, swaync, … |
 | Quick-reply window | Quickshell's `qs` on `PATH`. |
-| Mirroring and app streaming | GStreamer 1.22 or newer with `webrtcbin`, the libnice GStreamer plugin and an H.264 decoder (`vah264dec` or `avdec_h264`). Keyboard input in the video windows needs XWayland (`DISPLAY` set; on niri that is `xwayland-satellite`). |
+| Mirroring and app streaming | GStreamer 1.22 or newer with `webrtcbin`, libnice development/linker files, the libnice GStreamer plugin and an H.264 decoder (`vah264dec` or `avdec_h264`). Keyboard input in the video windows needs XWayland (`DISPLAY` set; on niri that is `xwayland-satellite`). |
 | Cross Control | Either compositor support for `wlr-layer-shell`, with `pointer-constraints` and `relative-pointer` (strongly recommended) and `keyboard-shortcuts-inhibit` (lets your shortcuts reach the phone), tested on niri; or, on GNOME 45 or newer, xdg-desktop-portal with InputCapture (not yet tested on a device). |
 | PC lock tile | systemd-logind (`loginctl`) and a screen locker that reacts to logind's Lock signal (GNOME needs GDM as the display manager for its lock screen), or Noctalia, or a locker passed with `--lock-command`. |
 | Hotspot tile | NetworkManager (`nmcli`). |
@@ -179,7 +179,7 @@ sudo apt install git build-essential pkg-config libdbus-1-dev libwayland-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-gl gstreamer1.0-nice gstreamer1.0-libav \
-  libgtk-4-dev libadwaita-1-dev
+  libnice-dev libgtk-4-dev libadwaita-1-dev
 ```
 
 ### Fedora (untested)
@@ -188,7 +188,7 @@ sudo apt install git build-essential pkg-config libdbus-1-dev libwayland-dev \
 sudo dnf install git gcc pkgconf-pkg-config dbus-devel wayland-devel \
   avahi avahi-tools bluez wl-clipboard NetworkManager fuse3 \
   gstreamer1-devel gstreamer1-plugins-base-devel gstreamer1-plugins-bad-free-devel \
-  gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 \
+  gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 libnice-devel \
   gtk4-devel libadwaita-devel
 ```
 
@@ -519,3 +519,25 @@ are. Also remove the PC from the Smart Connect app on the phone.
 
 Both scripts also remove `smartconnect-gui.desktop`, the launcher name earlier versions of these
 instructions used.
+
+### Optional scrcpy app and desktop backend
+
+Install `scrcpy` 3.0+ and Android platform-tools (`adb`) with the distribution's package manager.
+They are external runtime tools, not Cargo dependencies or downloaded by Smart Connect.
+Authorize ADB on the phone before selecting **Desktop mode → Display method → scrcpy (ADB)**.
+Wireless ADB's connection port may differ from 5555. The pairing-code port is separate.
+`SMARTCONNECT_SCRCPY_BIN` and `SMARTCONNECT_ADB_BIN` override executable lookup in the daemon/host;
+otherwise sibling executables and PATH are used. Software-decoder selection needs `--hwdec`
+support in the installed scrcpy build. The existing built-in backend needs neither tool.
+
+The scrcpy option is also available in **Apps → Streaming settings → Display method**. Its ADB options are independent of Desktop mode. Both backends capture an existing Smart Connect virtual display and retain two phone-side capture pipelines per stream; simultaneous streams remain subject to the phone’s encoder limits.
+
+The scrcpy folded-screen workaround embeds a helper built from `mirror/android/DisplayPower.java`; no APK installation or Java runtime on the PC is required. It runs as the already-authorized ADB shell and requires a supported per-display power API. Regeneration instructions are in `mirror/android/README.md`.
+
+The optional pre-start ADB wake/unlock setting needs only authorized `adb` when using built-in rendering. scrcpy itself remains required only for the scrcpy renderer. The setting does not establish ADB trust or remove a protected lock.
+
+Full folded-phone scrcpy mouse control requires Android 15+ and scrcpy 4+ with permitted UHID access. Older combinations still use the existing SDK input path. No additional PC package is required beyond the existing scrcpy/adb tools.
+
+### Optional computer input method adapter
+
+To enable computer-side composition in scrcpy windows, install scrcpy 5+ (SDL3), a C compiler, pkg-config and SDL3 development headers **before building**. Check `pkg-config --cflags sdl3`, then build the workspace normally. The mirror build script embeds an original adapter; systems without these headers can still build all existing modes but advertise `computerIme:false`. Native builds are supported; cross builds currently omit this optional adapter. No system scrcpy binary is replaced.

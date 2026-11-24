@@ -1,14 +1,33 @@
 //! Smart Connect for Linux: GTK4/libadwaita front-end for `smartconnectd`.
 
+pub use smartconnect_i18n_macros::tr_format;
+#[allow(dead_code)]
+#[path = "../../shared/app_display.rs"]
+mod app_display;
+#[allow(dead_code)]
+#[path = "../../shared/stream_settings.rs"]
+mod stream_settings;
+#[allow(dead_code)]
+#[path = "../../shared/desktop_renderer.rs"]
+mod desktop_renderer;
 mod apps;
+mod app_resolution;
+mod stream_controls;
 mod daemon;
 mod crosscontrol;
 mod display;
+mod messages;
 mod files;
 mod icons;
+mod i18n;
 mod lastdevice;
 mod lifecycle;
+mod logs;
+#[allow(dead_code)]
+#[path = "../../shared/mirror_log.rs"]
+mod mirror_log;
 mod mirror;
+mod mobile_desktop;
 mod prefs;
 mod setup;
 mod share;
@@ -39,6 +58,7 @@ picture.qr { background: white; border-radius: 12px; padding: 12px; }
 ";
 
 fn main() -> glib::ExitCode {
+    i18n::initialize(prefs::load().language);
     // `--background` starts the app hidden (tray only), for the autostart entry. GApplication never
     // sees the flag: we strip it and forward the rest of argv.
     let mut forwarded: Vec<String> = Vec::new();

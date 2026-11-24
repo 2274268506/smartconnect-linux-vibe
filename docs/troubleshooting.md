@@ -110,6 +110,24 @@ systemctl --user restart smartconnectd
 - `connect` answers `ok: true` once the invite is delivered. The phone then dials back by itself,
   usually within a second. `smartconnectd status` shows `"connected":true` when it has.
 
+## The cable connection doesn't work
+
+- **"Unable to connect: disconnect the USB cable…" after 30 to 45 s.** The phone found nothing on
+  the cable. Check that the daemon runs and logs `mdns: advertising _readyfor._tcp`: the phone looks
+  for that service on the cable. `avahi-publish` must be on the daemon's `PATH` (the AppImage ships
+  it in `~/.local/libexec/smartconnect-linux`). Let mDNS (udp 5353) and the control port through the
+  firewall on the cable interface too.
+- **The phone hangs on "Connecting"** and the daemon logs nothing from it: check that the PC's
+  service resolves with `avahi-browse -rt _readyfor._tcp` (it should list the cable address). The
+  daemon publishes it again whenever the phone's link comes up; if it still doesn't resolve,
+  restart the daemon.
+- **The phone keeps reconnecting the USB link** (the kernel log shows the phone re-enumerating every
+  30 to 45 s): same cause; that is the phone retrying.
+- **Connect on a plugged-in phone fails after a replug.** The PC's cable address changed (the daemon keeps it fixed with the
+  `smartconnect-phone-usb` NetworkManager profile: check its log for `cable:` lines, see
+  [By cable](usage.md#by-cable)), or the phone still has the old one: use the
+  phone's cable mode, or scan a new QR once.
+
 ## The phone isn't found over Bluetooth
 
 | Reply from `smartconnectd connect` | Meaning and fix |
@@ -195,6 +213,16 @@ BLE peripheral.
 - **"Open on phone" opens nothing:** it opens the app in a window through app streaming; see
   [Mirroring and app streaming](#mirroring-and-app-streaming).
 
+## Main window and tray
+
+Closing the main GTK window hides it to the tray and leaves phone streams running. Reopen it
+from the tray or application launcher; use the tray's Quit action to exit. Newer builds queue
+tray state updates off the GTK thread so a delayed tray service cannot block closing/reopening.
+Closing a phone video window also has a direct close notification in newer builds, so a static
+phone picture does not delay ending the session until its next frame.
+If the problem persists, distinguish the management window from the phone video window and
+record whether only this app or the whole desktop stops responding.
+
 ## Mirroring and app streaming
 
 **The window never appears, and nothing is logged for about 15 s.** The phone gave up silently.
@@ -223,13 +251,106 @@ Other problems:
 | Mouse works, keyboard doesn't | The window isn't running through XWayland. Make sure `DISPLAY` is set where the viewer runs (on niri, install `xwayland-satellite`), and don't set `MIRROR_GL_WAYLAND`. |
 | The window closes with `ICE down > 5 s` | Phone and PC lost each other on the network (Wi-Fi roaming, sleep). Start it again. |
 | `start of <pkg> timed out` | The phone didn't start that app within 20 s. Try again, or open the app on the phone first. |
+| An app or virtual-phone window shows the picture sideways after the app turned to landscape | Update to a build with rotation support (see [Rotation](usage.md#screen-share-and-mobile-desktop-tiles)). If it turns the wrong way, set `SMARTCONNECT_MIRROR_ROTATION=invert` in the daemon's environment and restart it. |
+| The window stays landscape after leaving a full-screen video | The phone sent no turn back to portrait, so the app left the virtual display landscape (seen with YouTube's full-screen player and Back). Press Home on the virtual phone, or turn the app back; the window follows when the phone reports it. |
+| After rotating, clicks land in the wrong place | Please report it with your phone model; `SMARTCONNECT_MIRROR_ROTATION=off` returns to the old behaviour. |
+| Native rotation produces stretched or clipped content on a foldable | Forced virtual-display rotation showed this limitation on the current foldable. Use the scrcpy renderer, which handles rotation separately, or set `SMARTCONNECT_MIRROR_ROTATION=off` and restart the host. Correct native rotated pixels/input on this device are not yet verified. |
 | An app window flickers or the stream restarts after resizing it | Window resize is opt-in and not verified on a device. Unset `SMARTCONNECT_MIRROR_RESIZE` (or drop `--resize`) and restart the host. |
 | `--list-apps` prints `the phone did not answer; showing the cached list` | The phone is busy or not connected. The cached list in `~/.cache/smartconnect/apps.json` is still usable. |
 | The *Apps* page shows initials instead of the phone's icons | The daemon downloads them on each connection; look for `app icons:` in `journalctl --user -u smartconnectd`. A `fetch failed` with a connection or TLS error usually means the one-shot offer expired before the download started; run `smartconnect-fex fetch-app-icons` to try again now. Nothing logged: the phone didn't send its app list (it skips it for a secondary Android user), or `SMARTCONNECT_APP_ICONS=0` is set. |
 | The Noctalia **Mirror screen** button flips back while the window stays open | The panel ran the viewer, the viewer handed the request to the stream host and exited, so the panel thinks mirroring stopped. Close the window to stop mirroring. |
 
+### Streamed app stops responding after switching windows
+
+For the built-in GStreamer renderer, if a streamed app stops accepting input after switching
+away and back, try the XVideo sink. This setting does not affect scrcpy. The upstream contributor
+verified this workaround on Ubuntu 26.04 with GNOME and XWayland; it has not been verified on
+the current KDE setup. It preserves the video's aspect ratio when resizing, but the built-in
+GL window's custom fixed-aspect layout controls may be unavailable with this sink.
+
+Check that the sink is installed with `gst-inspect-1.0 --exists xvimagesink`. If it is available and
+you run the systemd user service, create
+`~/.config/systemd/user/smartconnectd.service.d/mirror-sink.conf` with:
+
+```ini
+[Service]
+Environment="MIRROR_SINK=xvimagesink force-aspect-ratio=true"
+```
+
+Run `systemctl --user daemon-reload` and `systemctl --user restart smartconnectd.service`.
+The restart closes active streams. Reconnect the phone and reopen the app. To restore the default
+sink, remove this drop-in file, reload systemd and restart the service again.
+
 For GStreamer-level detail, run the viewer by hand with
 `GST_DEBUG='3,webrtc*:5' smartconnect-mirror`.
+
+**Playback performance.** The default GL video window performs its own upload/color conversion,
+presents the latest decoded frames without waiting for the video clock. VA-API decoding is used
+when available; `MIRROR_DECODER=avdec_h264` is a compatibility comparison, not a speed setting.
+Logs show the selected decoder, negotiated raw-video format and jitter buffer. The default
+`MIRROR_LATENCY_MS=80` reduces buffering relative to GStreamer's 200 ms default; a busy or unstable
+Wi-Fi may work better at 150–200 ms. Change one setting at a time and compare the same scene.
+High-resolution keyframes arrive in bursts. A small UDP receive buffer can drop packets even
+when the renderer reports no dropped frames. The viewer requests a 4 MiB receive buffer for each
+libnice UDP socket; `udpReceiveBuffers` in `--sessions` reports the effective size (Linux doubles
+it for accounting). The kernel's `net.core.rmem_max` still applies. This adjustment is local to
+the viewer's sockets. On Linux, `ss -u -a -n -p -m` shows socket buffer limits (`rb`) and kernel
+drops (`d`); compare the counters over time for the viewer process. Old cumulative drops alone
+do not prove the current stream is losing packets.
+
+If the picture freezes and clicks appear ineffective, inspect `smartconnect-mirror --sessions`
+while interacting. `videoProgress` distinguishes received RTP packets, decoded frames and
+window input activity; `renderStats` shows renderer progress. Static phone screens may send
+no new frames. When packets continue without decoded frames for two seconds, or a recent
+button/scroll/key press produces no decoded frame for two seconds, the viewer requests a fresh
+H.264 keyframe. Retries are at least two seconds apart, at most three until decoding resumes;
+idle windows are not restarted. This can recover lost keyframe feedback, but does not fix an
+unresponsive Android app or every driver/connection failure. A window input count alone
+cannot prove that the phone processed the input.
+
+For short stutters, `streamTiming` compares packets entering and leaving the jitterbuffer.
+`maxJitterHoldMs` measures local buffering, while `maxArrivalVsRtpDeltaMs` compares frame
+arrival intervals against the sender's 90-kHz RTP clock. `rtpTimestampRegressions` counts
+backward sender timestamps in sequence order. These are session-wide maxima/counters;
+static screens and startup bursts can affect them. `jitterStats` reports RTP loss, lateness,
+duplicates and average jitter. Zero renderer drops does not rule out network or decode stalls.
+
+Check the actual network path when Bluetooth PAN and Wi-Fi coexist. A PAN interface can have
+an Ethernet-style name; `readlink -f /sys/class/net/<interface>` reveals its Bluetooth parent.
+Compare interface RX byte counters during interaction. Prefer a shared Wi-Fi LAN for video.
+`SMARTCONNECT_ICE_ADDRESSES` can select the PC's LAN address on the host; address/list filters
+now constrain libnice gathering as well as signalling, preventing peer-reflexive candidates
+from silently selecting a different local interface. Restart the host/streams after changing
+its environment. If the control connection itself uses PAN, the default still follows it:
+reconnect through Wi-Fi or explicitly select a reachable LAN address. `all` keeps unrestricted
+gathering. This does not guarantee frame rate or fix sender-side stalls.
+
+The host's sessions response includes renderer frame/drop counters when available; the counter
+difference over a timed interval measures rendering throughput, not input-to-display latency.
+
+**Torn, corrupted or stuttering phone video on the PC.** The Display tab's size, bitrate and FPS
+settings control PC-to-phone video, not this receive path. Look for `playback: decoder=…` in the
+host log. The viewer requests a keyframe after detected packet loss and keeps at most two decoded
+frames waiting for rendering; this does not fix every driver, compositor or network problem.
+
+Compare software decoding while keeping the same renderer. Close the active stream, stop the
+daemon so it cannot respawn the old host, then run these in two terminals:
+
+```sh
+# Terminal 1: keep the daemon running in the foreground.
+systemctl --user stop smartconnectd
+MIRROR_DECODER=avdec_h264 GST_DEBUG=2 smartconnectd
+# Terminal 2: after the phone reconnects, request the mirror (or open an app in the GUI).
+smartconnect-mirror
+```
+
+Setting `MIRROR_DECODER` only on the second command has no effect when an existing host handles
+the request. The host inherits its environment from the daemon that starts it. To restore the
+normal service, stop the foreground daemon with Ctrl+C and run
+`systemctl --user start smartconnectd`. If software decoding helps, retain it in a service
+drop-in; otherwise compare `MIRROR_GL_WAYLAND=1` in the foreground daemon's environment.
+Native Wayland loses keyboard input in this viewer, so use it only as a rendering comparison.
+Record which change helps before making it permanent; avoid posting unredacted stream logs.
 
 ## Cross Control
 
@@ -248,6 +369,14 @@ For GStreamer-level detail, run the viewer by hand with
 | The Noctalia button shows "off" although Cross Control works | A client started by the daemon (from the phone's tile) is running. This is a known gap in the plugin; the GTK app's Display tab does show it. |
 | The pointer doesn't cross over everywhere on the edge | Only the highlighted part of the edge (where the phone touches the screen under *Phone position* on the Display tab) leads to the phone. Drag the phone to change it, or pass `--span 0:1`. |
 | The pointer is too fast or too slow on the phone | Use `--gain` (default 1.6). |
+
+## Some keys move the pointer on the phone
+
+If typing into the mirror, an app window, the virtual phone or Cross Control drops keys such as
+**u i o p, j k l, m**, or moves or clicks the phone's pointer instead, Android's **Mouse keys**
+accessibility setting is on: it turns those keys of a physical keyboard into pointer controls, and
+the PC's keyboard reaches the phone as one. Turn it off on the phone (search Settings for "Mouse
+keys"; usually under *System → Keyboard → Physical keyboard* or *Accessibility*).
 
 ## Phone files (~/Phone)
 
@@ -454,6 +583,32 @@ jq -c 'select(.frame | type == "object") | select(.frame.serviceId == 15)' "$f" 
 The live equivalent is the control socket's `watch` command
 (see [Control socket API](control-socket-api.md#watch)).
 
+## Custom app resolution does not match the request
+
+Use **Apps → App streaming settings**, then close only the affected app window and reopen it.
+Changing defaults does not resize an already open window. Check the running row's actual
+size/DPI and the requested size, or the host `sessions` response. A phone may cap the encoder
+size; an application may force orientation or letterbox its content. Try a preset matching the
+app's orientation and a lower resolution. Use DPI to change control/text size rather than
+changing phone-global settings. Whole-screen mirror and desktop mode use other controls.
+
+An update/restart error means the running host predates `appResolution` support; update it as
+well as the GUI. Mirroring logs include the requested app geometry, decoded format and media
+progress. The CLI rejects malformed/partial sizes and a DPI without dimensions.
+
+## Inspecting mirroring logs
+
+Use **device menu → Mirroring logs** or **Desktop mode → View mirroring logs** for live logs,
+including after a window closes. Search for `ICE`, `decoder`, `recovery` or `stats`; compare RTP,
+decoded/rendered frame counts and last-frame ages. Idle streams can legitimately send no frames.
+Warnings/errors can be filtered separately; pause affects viewing only. Export applies the same
+filters to retained history. CLI: `smartconnect-mirror --logs` and `--log-path`.
+
+If the viewer says no logs exist, start/restart the updated stream host. It does not import old
+runtime/cache captures. Read/write errors may indicate an unwritable `XDG_STATE_HOME` or a full
+filesystem. Dedicated logs rotate at 2 MiB with two backups; old protocol session logs have a
+separate retention policy. Do not enable raw session logging just to inspect basic media status.
+
 ## Starting over
 
 - **Pair again:** remove the PC in the Smart Connect app, then scan a fresh QR.
@@ -469,3 +624,95 @@ The live equivalent is the control socket's `watch` command
 
   Then remove the old entry on the phone and pair again.
 - **Remove everything:** `./packaging/uninstall.sh --purge`.
+
+## Phone app notifications do not appear on the PC
+
+Check the phone's Smart Connect **Settings → Notifications**: enable **Share notifications**,
+select this PC, then open **Allowed apps → menu → Select all apps** or choose the apps you want.
+Notification-listener permission alone does not select apps for sharing. Each source app also
+needs Android notification permission; if it posts nothing on the phone, nothing can be relayed.
+
+Compare the `notifications` array in `smartconnectd status` with the GTK Notifications page.
+If entries arrive but no popup appears, check desktop Do Not Disturb. KDE's
+`org.freedesktop.Notifications.Inhibited` property can report suppression; it does not prevent
+the daemon/GTK list from receiving notifications. Keep Do Not Disturb enabled if list-only
+synchronization is desired. No notification bodies need to be included in diagnostic reports.
+
+On some Motorola builds, the phone's allowed-app list also limits what Android delivers to
+Smart Connect's listener. A `cmd notification post` shell test is inconclusive when the Shell
+app lacks its own notification permission or is outside that list. Test a new notification
+from an allowed app with Android notification permission. Existing historical notifications
+may not be replayed after changing sharing settings.
+
+## Unread SMS count remains after reading on the phone
+
+The phone may push the count on connection/settings changes without sending an update for a
+local read. The daemon relies on phone-pushed status and does not poll every 15 seconds, so the
+cached count can remain until the next service 100 `cmd 1018` update. App notifications use a
+separate count and push channel. Check `smartconnectd status` without collecting SMS contents;
+restoring application notification sharing does not guarantee SMS read-state pushes.
+
+**Native app fit cannot be saved.** The computed source size must still fit the app encoder
+bounds (even sides 320–3840, short side at most 2160). A portrait ratio fitted to a wide screen's
+width can need an excessively tall source. Fit height or choose another ratio. Source resolution
+uses physical pixels, not GTK logical units. Native fit is borderless and requires XWayland;
+compositor rules and phone-side rescaling can prevent exact pixel mapping.
+
+**Changing FPS/bitrate does not increase fluidity.** Limits are ceilings. The phone may encode
+below them; static screens send fewer frames. FPS is enforced after decoding when needed,
+so lowering it can leave the received bitrate unchanged. Inspect `displayRateDropped` alongside
+`videoProgress`, `renderStats` and `requestedQuality`. Reopen the app or apply/restart desktop
+for changed settings. The PC-to-phone Display page controls the opposite direction.
+
+**Integrated scrcpy desktop does not start.** Inspect the Desktop page's error and Mirroring
+logs. Check `adb devices`: the phone must show `device`, not `unauthorized` or `offline`.
+Authorize it on the phone; use the wireless debugging connection port, not its pairing port.
+If several devices are connected, fill the ADB device field. A failed integration attempt closes
+its desktop source automatically. Retry Start after fixing the connection. Diagnostic output
+redacts the selected serial and suppresses ADB device-list rows.
+
+**scrcpy hardware decoding crashes or shows black video.** Enable **Software decoding for scrcpy**
+and Apply/restart. If `--hwdec` is unavailable, upgrade scrcpy or disable that override. On this
+host, normal X11 scrcpy playback used VA-API; an earlier record-only automatic-hardware test
+crashed, so a hardware failure should not be mistaken for failed Motorola desktop initialization.
+Closing the integrated scrcpy window stops desktop mode; minimizing it keeps the session alive.
+
+## scrcpy goes black when a foldable phone is closed
+
+A virtual Smart Connect display can remain on while Android turns scrcpy's separate capture display off with the physical inner screen. The host now starts a bundled helper over authorized ADB before the viewer. It discovers the newly created shell-owned scrcpy display mirroring that session's source and restores only that capture's power when needed. Logs show `capture power: restored virtual display=… source=…`.
+
+The workaround requires an Android build exposing `DisplayManagerGlobal.requestDisplayPower(int,int)` and shell display-management access; it was verified on a folded Motorola Android 16 phone. Missing API/permission/helper failures are logged and leave the normal scrcpy path available. Unlock/confirmation and protected-content restrictions still apply. Use **Cancel** during startup instead of waiting for a black viewer to time out. Do not turn on unrelated physical displays or disable the lock screen to work around it.
+
+## Chinese app title appears as garbage on KDE
+
+Update/restart the mirror host and reopen the app projection. UTF-8 titles must declare `UTF8_STRING` on both `_NET_WM_NAME` and `WM_NAME`; writing UTF-8 bytes under the Latin-1 `STRING` type caused garbled legacy-title decoding. The fix keeps SDL's WM_CLASS unchanged. The X11 regression test checks Chinese text, punctuation and an emoji in both title properties.
+
+## Automatic ADB wake does not unlock a protected phone
+
+Enable **Wake and unlock with ADB before starting** separately in app or desktop settings. Check that ADB is enabled/authorized and the device/connection port is correct. The host uses normal Android `KEYCODE_WAKEUP` and `wm dismiss-keyguard`, then checks keyguard state before requesting projection. A protected lock requires authentication on the device. Unknown lock-state output fails conservatively; verify manually and retry. **Cancel** works during these checks. This option does not change lock-screen security settings or bypass Smart Connect confirmation.
+
+## Folded scrcpy shows video but clicks do nothing
+
+Powering the capture display on does not make it interactive for Android's input dispatcher. On the tested foldable, the original Smart Connect display was interactive while scrcpy's mirror display remained noninteractive; SDK mouse events aimed at that mirror were discarded. SDK keyboard events aimed at the original source still worked.
+
+Update the host and reopen the viewer with **Fold-compatible mouse** on (default). Android 15+/scrcpy 4+ then use a UHID mouse associated with the original display. Logs show `mouse=bound-uhid`; older/unknown combinations show `mouse=sdk`. Move/click inside the viewer; Left Alt or either Super key releases relative capture. If the phone rejects UHID, logs will contain scrcpy server errors; turn the option off for SDK compatibility and use an unfolded phone. A visible first texture alone is insufficient validation: verify a click changes app content and check the UHID association targets that session's source.
+
+### Phone input method does not compose Chinese in scrcpy
+
+Enable **Use phone input method** in the app or desktop Display method settings and reopen the stream. Android 15+ and scrcpy 4+ are required for source-bound UHID keyboard routing in this integration. Focus a phone text field and choose Chinese in the phone input method. Super+K opens physical keyboard settings; enable the on-screen keyboard there if candidates are hidden and configure the physical keyboard language. This option uses the phone's IME. If letters arrive but no Chinese candidates appear, configure a Chinese physical-keyboard mode supported by the selected phone IME; Latin input was verified locally, but Chinese candidate selection remains unverified with the current phone IME configuration. SDK keyboard mode has limited character/IME support, so disabling the option can bring back the original problem.
+
+If the relative compatibility mouse feels too fast or slow, adjust **Mouse speed (%)** (25–400%, default 100%) in the same settings and reopen the stream. The setting only affects the compatibility mouse; built-in rendering and SDK mouse mode are unaffected.
+
+### Use the computer Chinese input method in scrcpy
+
+Enable **Use computer input method** in app/desktop Display method settings and reopen the stream. Focus the phone field, switch the computer IME to Chinese and confirm a candidate. This sends committed Unicode text instead of relying on SDK character injection. Keep computer input mode off when using a phone physical-keyboard IME. A startup error mentioning SDL3 requires scrcpy 5+ and a Smart Connect build with SDL3 development headers. If the input channel is busy, its log entry contains no text; reduce paste/commit size (maximum 8192 UTF-8 bytes per commit).
+
+### scrcpy video works but has no sound
+
+Update/restart the stream host: older integration builds forced `--no-audio`. Enable **Play phone audio** in the app or desktop Display method settings and reopen the projection. Confirm the phone media volume is nonzero, and the scrcpy stream is not muted in the PC mixer and uses the intended output device. Enable audio in only one active projection to avoid competing captures.
+
+Check the mirroring log for audio capture/encoder/output errors. Android 11 requires an unlocked phone at startup; Android 10 and older do not support this forwarding. Audio initialization failure can leave video working. The source is the phone's output, not its microphone, and application/device audio policies may limit what is captured.
+
+### PC audio should remain audible with phone media volume at zero
+
+Enable **Independent of phone volume** below **Play phone audio** and restart the scrcpy projection. Android 13+ is required. This selects app-playback capture instead of phone-output capture; adjust scrcpy volume in the PC mixer. The integration does not increase or repeatedly enforce the phone's media volume. If the application excludes playback capture, switch independent mode off to restore the previous output path.

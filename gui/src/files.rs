@@ -18,6 +18,8 @@
 //!
 //! Below the mount settings, [`ShareSection`] (`share.rs`) shares a PC folder with the phone.
 
+use crate::i18n::tr;
+
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io;
@@ -198,7 +200,7 @@ fn spawn_mount(dir: &Path) -> Result<Child, String> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log2))
         .spawn()
-        .map_err(|e| format!("Could not start {}: {e}", bin.display()))
+        .map_err(|e| crate::tr_format!("Could not start {}: {e}", "无法启动 {}：{e}", bin.display()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -266,7 +268,7 @@ impl FilesPage {
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
         // ── Storage card (hero) ───────────────────────────────────────────────
         let icon = gtk::Image::builder().icon_name("folder-symbolic").pixel_size(32).build();
-        let title = gtk::Label::builder().label("Phone storage").xalign(0.0).css_classes(["title-4"]).wrap(true).build();
+        let title = gtk::Label::builder().label(tr("Phone storage")).xalign(0.0).css_classes(["title-4"]).wrap(true).build();
         let detail = gtk::Label::builder()
             .xalign(0.0)
             .css_classes(["dim-label"])
@@ -277,7 +279,7 @@ impl FilesPage {
         let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).valign(gtk::Align::Center).build();
         text.append(&title);
         text.append(&detail);
-        let readonly = gtk::Label::builder().label("Read-only").css_classes(["caption", "dim-label", "card", "sc-badge"]).valign(gtk::Align::Center).visible(false).build();
+        let readonly = gtk::Label::builder().label(tr("Read-only")).css_classes(["caption", "dim-label", "card", "sc-badge"]).valign(gtk::Align::Center).visible(false).build();
         let head = gtk::Box::builder().spacing(12).build();
         head.append(&icon);
         head.append(&text);
@@ -285,9 +287,9 @@ impl FilesPage {
 
         let banner = adw::Banner::builder().revealed(false).build();
 
-        let mount = gtk::Button::builder().css_classes(["suggested-action"]).label("Mount").build();
-        let unmount = gtk::Button::builder().label("Unmount").visible(false).build();
-        let open = gtk::Button::builder().css_classes(["suggested-action"]).label("Open in Files").visible(false).build();
+        let mount = gtk::Button::builder().css_classes(["suggested-action"]).label(tr("Mount")).build();
+        let unmount = gtk::Button::builder().label(tr("Unmount")).visible(false).build();
+        let open = gtk::Button::builder().css_classes(["suggested-action"]).label(tr("Open in Files")).visible(false).build();
         let actions = gtk::Box::builder().spacing(8).halign(gtk::Align::Start).build();
         actions.append(&mount);
         actions.append(&unmount);
@@ -311,7 +313,7 @@ impl FilesPage {
         let page_ref: Rc<RefCell<Option<std::rc::Weak<Self>>>> = Rc::new(RefCell::new(None));
         for (index, (label, candidates)) in QUICK.into_iter().enumerate() {
             let inner = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
-            inner.append(&gtk::Label::builder().label(label).css_classes(["heading"]).xalign(0.0).build());
+            inner.append(&gtk::Label::builder().label(tr(label)).css_classes(["heading"]).xalign(0.0).build());
             let name = gtk::Label::builder().label(candidates[0]).css_classes(["caption", "dim-label"]).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
             inner.append(&name);
             let button = gtk::Button::builder().css_classes(["card", "sc-tile"]).hexpand(true).child(&inner).build();
@@ -324,17 +326,17 @@ impl FilesPage {
             quick_flow.append(&button);
             quick.push(button);
         }
-        let quick_group = adw::PreferencesGroup::builder().title("Quick folders").visible(false).build();
+        let quick_group = adw::PreferencesGroup::builder().title(tr("Quick folders")).visible(false).build();
         quick_group.add(&quick_flow);
 
         // ── Storage settings ──────────────────────────────────────────────────
-        let location = adw::ActionRow::builder().title("Mount location").use_markup(false).build();
-        let change = gtk::Button::builder().label("Change…").valign(gtk::Align::Center).build();
+        let location = adw::ActionRow::builder().title(tr("Mount location")).use_markup(false).build();
+        let change = gtk::Button::builder().label(tr("Change…")).valign(gtk::Align::Center).build();
         location.add_suffix(&change);
-        let auto_mount = adw::SwitchRow::builder().title("Mount automatically when connected").build();
+        let auto_mount = adw::SwitchRow::builder().title(tr("Mount automatically when connected")).build();
         let group = adw::PreferencesGroup::builder()
-            .title("Storage")
-            .description("The phone's storage is mounted read-only.")
+            .title(tr("Storage"))
+            .description(tr("The phone's storage is mounted read-only."))
             .build();
         group.add(&location);
         group.add(&auto_mount);
@@ -498,7 +500,7 @@ impl FilesPage {
 
     /// Opens a folder chooser to pick where the phone's storage is mounted.
     fn choose_folder(self: &Rc<Self>, button: &gtk::Button) {
-        let dialog = gtk::FileDialog::builder().title("Choose the mount folder").accept_label("Use folder").build();
+        let dialog = gtk::FileDialog::builder().title(tr("Choose the mount folder")).accept_label(tr("Use folder")).build();
         dialog.set_initial_folder(Some(&gio::File::for_path(prefs::load().files.mount_path())));
         let parent = button.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
@@ -510,7 +512,7 @@ impl FilesPage {
                         p.save_dir(&path.display().to_string());
                     }
                 }
-                Err(e) if !e.matches(gtk::DialogError::Dismissed) => p.toast(&format!("Could not choose a folder: {e}")),
+                Err(e) if !e.matches(gtk::DialogError::Dismissed) => p.toast(&crate::tr_format!("Could not choose a folder: {e}", "无法选择文件夹：{e}")),
                 Err(_) => {}
             }
         });
@@ -551,7 +553,7 @@ impl FilesPage {
             let _ = fusermount_unmount(&dir);
         }
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.fail(&format!("Could not create {}: {e}", dir.display()));
+            self.fail(&crate::tr_format!("Could not create {}: {e}", "无法创建 {}：{e}", dir.display()));
             return;
         }
         if is_mountpoint(&dir) {
@@ -647,7 +649,7 @@ impl FilesPage {
                 let Some(target) = p.st.borrow_mut().open_after.take() else { return };
                 match health {
                     Health::Live => p.open_target(target, None),
-                    _ => p.toast("The phone's storage mounted, but it isn't readable yet. Try Open again in a moment."),
+                    _ => p.toast(tr("The phone's storage mounted, but it isn't readable yet. Try Open again in a moment.")),
                 }
             })),
         );
@@ -691,9 +693,9 @@ impl FilesPage {
         };
         if lost {
             let message = if health == Health::Stale {
-                "The phone's storage mount stopped working (its helper ended), so it was cleared."
+                tr("The phone's storage mount stopped working (its helper ended), so it was cleared.")
             } else {
-                "The phone's storage is no longer mounted."
+                tr("The phone's storage is no longer mounted.")
             };
             self.lost_mount(message);
         } else {
@@ -735,10 +737,10 @@ impl FilesPage {
         cleanup_mount(&dir);
         let detail = last_log_line();
         let message = match (was_mounting, detail) {
-            (true, Some(line)) => format!("Could not mount the phone's storage: {line}"),
-            (true, None) => "Could not mount the phone's storage. Is the phone connected?".to_owned(),
-            (false, Some(line)) => format!("The phone's storage was unmounted: {line}"),
-            (false, None) => "The phone's storage was unmounted.".to_owned(),
+            (true, Some(line)) => crate::tr_format!("Could not mount the phone's storage: {line}", "无法挂载手机存储：{line}"),
+            (true, None) => tr("Could not mount the phone's storage. Is the phone connected?").to_owned(),
+            (false, Some(line)) => crate::tr_format!("The phone's storage was unmounted: {line}", "手机存储已卸载：{line}"),
+            (false, None) => tr("The phone's storage was unmounted.").to_owned(),
         };
         self.fail(&message);
         if !was_mounting {
@@ -772,8 +774,8 @@ impl FilesPage {
                 st.started = None;
             }
             match result {
-                Ok(()) => p.toast("Phone storage unmounted"),
-                Err(e) => p.toast(&format!("Unmount failed: {e}")),
+                Ok(()) => p.toast(tr("Phone storage unmounted")),
+                Err(e) => p.toast(&crate::tr_format!("Unmount failed: {e}", "卸载失败：{e}")),
             }
             p.banner.set_revealed(false);
             p.refresh();
@@ -804,7 +806,7 @@ impl FilesPage {
     fn open_checked(self: &Rc<Self>, target: Option<usize>, button: &gtk::Button) {
         if self.st.borrow().phase == Phase::Mounting {
             self.st.borrow_mut().open_after = Some(target);
-            self.toast("Still mounting; it opens when ready");
+            self.toast(tr("Still mounting; it opens when ready"));
             return;
         }
         let parent = button.root().and_downcast::<gtk::Window>().map(|w| w.downgrade());
@@ -814,8 +816,8 @@ impl FilesPage {
                 let parent = parent.and_then(|w| w.upgrade());
                 match health {
                     Health::Live => p.open_target(target, parent.as_ref()),
-                    Health::Offline => p.toast("The phone is offline right now. Its storage reconnects by itself when the phone is back."),
-                    Health::Unresponsive => p.toast("The phone's storage isn't responding. Try again in a moment."),
+                    Health::Offline => p.toast(tr("The phone is offline right now. Its storage reconnects by itself when the phone is back.")),
+                    Health::Unresponsive => p.toast(tr("The phone's storage isn't responding. Try again in a moment.")),
                     Health::Stale | Health::NotMounted => p.remount_then_open(target),
                 }
             })),
@@ -825,14 +827,14 @@ impl FilesPage {
     /// The mount was lost (and already cleared by `apply_health`): mount again, open when up.
     fn remount_then_open(self: &Rc<Self>, target: Option<usize>) {
         if !self.st.borrow().connected {
-            self.toast("Connect the phone to open its storage");
+            self.toast(tr("Connect the phone to open its storage"));
             return;
         }
         self.st.borrow_mut().auto_suppressed = false;
         self.start_mount(); // may already be under way (auto-mount)
         if self.st.borrow().phase == Phase::Mounting {
             self.st.borrow_mut().open_after = Some(target);
-            self.toast("Remounting the phone's storage…");
+            self.toast(tr("Remounting the phone's storage…"));
         }
     }
 
@@ -846,7 +848,7 @@ impl FilesPage {
             None => dir,
             Some(Some(sub)) => dir.join(sub),
             Some(None) => {
-                self.toast("That folder is not on the phone");
+                self.toast(tr("That folder is not on the phone"));
                 return;
             }
         };
@@ -856,7 +858,7 @@ impl FilesPage {
             if let Err(e) = res {
                 if !e.matches(gtk::DialogError::Dismissed) {
                     if let Some(toasts) = weak.upgrade() {
-                        toasts.add_toast(adw::Toast::new(&format!("Could not open the folder: {e}")));
+                        toasts.add_toast(adw::Toast::new(&crate::tr_format!("Could not open the folder: {e}", "无法打开文件夹：{e}")));
                     }
                 }
             }
@@ -923,14 +925,14 @@ impl FilesPage {
         let mounting = *p == Phase::Mounting;
 
         self.title.set_label(match p {
-            Phase::Unmounted => "Phone storage",
-            Phase::Mounting => "Mounting…",
-            Phase::Mounted => "Phone storage mounted",
+            Phase::Unmounted => tr("Phone storage"),
+            Phase::Mounting => tr("Mounting…"),
+            Phase::Mounted => tr("Phone storage mounted"),
         });
         self.detail.set_label(&match p {
-            Phase::Unmounted if !st.connected => "Connect your phone to mount its storage.".to_owned(),
-            Phase::Unmounted => "Mount the phone's storage to browse its files from this PC.".to_owned(),
-            Phase::Mounting => "Handshaking with the phone…".to_owned(),
+            Phase::Unmounted if !st.connected => tr("Connect your phone to mount its storage.").to_owned(),
+            Phase::Unmounted => tr("Mount the phone's storage to browse its files from this PC.").to_owned(),
+            Phase::Mounting => tr("Handshaking with the phone…").to_owned(),
             Phase::Mounted => match st.health {
                 Health::Offline => format!("{} · the phone is offline; it reconnects when the phone is back", st.dir.display()),
                 Health::Unresponsive => format!("{} · not responding right now", st.dir.display()),
@@ -940,14 +942,14 @@ impl FilesPage {
         self.readonly.set_visible(mounted);
 
         self.mount.set_visible(!mounted);
-        self.mount.set_label(if mounting { "Mounting…" } else { "Mount" });
+        self.mount.set_label(if mounting { tr("Mounting…") } else { tr("Mount") });
         // Mount only when the phone is connected and nothing is in flight.
         self.mount.set_sensitive(st.connected && *p == Phase::Unmounted && !st.busy);
 
         self.open.set_visible(mounted);
         self.open.set_sensitive(!st.busy);
         self.unmount.set_visible(mounted);
-        self.unmount.set_label(if st.busy { "Unmounting…" } else { "Unmount" });
+        self.unmount.set_label(if st.busy { tr("Unmounting…") } else { tr("Unmount") });
         self.unmount.set_sensitive(!st.busy);
 
         // Quick folders: shown only while mounted, each hidden (cell and all) when its target is absent.

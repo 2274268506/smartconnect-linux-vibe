@@ -37,6 +37,7 @@ pub struct Status {
     pub wifi_signal: Option<i64>,
     pub cell_signal: Option<i64>,
     pub bluetooth: bool,
+    /// Unread SMS/MMS from service 100; independent of forwarded app notifications.
     pub unread: Option<i64>,
     pub wallpaper: Option<String>,
     pub pairing_qr: Option<String>,

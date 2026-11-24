@@ -24,6 +24,8 @@
 //! goes to a file, not a pipe: the helper prints on every step, and a write to a pipe whose reader is
 //! gone (GUI closed) would panic and abort it before that clean-up.
 
+use crate::i18n::tr;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
@@ -290,8 +292,8 @@ impl Opts {
     /// One line for a session this page did not start, e.g. "Extend, native size, 150 %".
     fn summary(&self) -> String {
         let mut s = match self.mode {
-            Mode::Extend => "Extend".to_owned(),
-            Mode::Mirror => "Duplicate".to_owned(),
+            Mode::Extend => tr("Extend").to_owned(),
+            Mode::Mirror => tr("Duplicate").to_owned(),
         };
         s += &match self.size {
             Size::Phone => ", phone's default size".to_owned(),
@@ -450,7 +452,7 @@ fn spawn(bin: &Path, args: &[String], log: &Path) -> Result<Child, String> {
             Ok(())
         });
     }
-    cmd.spawn().map_err(|e| format!("Could not start {}: {e}", bin.display()))
+    cmd.spawn().map_err(|e| crate::tr_format!("Could not start {}: {e}", "无法启动 {}：{e}", bin.display()))
 }
 
 /// SIGINT: the helper tells the phone to stop, switches an extend output off and exits.
@@ -812,14 +814,14 @@ fn hint_row(icon: &str, title: &str) -> adw::ActionRow {
 fn copy_button(text: &'static str, toasts: &adw::ToastOverlay) -> gtk::Button {
     let button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
-        .tooltip_text(format!("Copy “{text}”"))
+        .tooltip_text(crate::tr_format!("Copy “{text}”", "复制“{text}”"))
         .valign(gtk::Align::Center)
         .css_classes(["flat"])
         .build();
     let toasts = toasts.clone();
     button.connect_clicked(move |b| {
         b.clipboard().set_text(text);
-        toasts.add_toast(adw::Toast::new("Copied to the clipboard"));
+        toasts.add_toast(adw::Toast::new(tr("Copied to the clipboard")));
     });
     button
 }
@@ -841,7 +843,7 @@ fn spin_row(title: &str, subtitle: &str, (min, max, step): (u32, u32, u32)) -> a
 impl DisplayPage {
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
         let icon = gtk::Image::builder().icon_name("video-display-symbolic").pixel_size(32).build();
-        let title = gtk::Label::builder().label("Phone as display").xalign(0.0).css_classes(["title-4"]).wrap(true).build();
+        let title = gtk::Label::builder().label(tr("Phone as display")).xalign(0.0).css_classes(["title-4"]).wrap(true).build();
         let status = gtk::Label::builder().xalign(0.0).wrap(true).build();
         let detail = gtk::Label::builder()
             .css_classes(["dim-label"])
@@ -850,10 +852,10 @@ impl DisplayPage {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .build();
-        let start = gtk::Button::builder().css_classes(["suggested-action"]).label("Start").valign(gtk::Align::Center).build();
+        let start = gtk::Button::builder().css_classes(["suggested-action"]).label(tr("Start")).valign(gtk::Align::Center).build();
         let apply = gtk::Button::builder()
-            .label("Apply")
-            .tooltip_text("Restart the session with these settings")
+            .label(tr("Apply"))
+            .tooltip_text(tr("Restart the session with these settings"))
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -863,20 +865,20 @@ impl DisplayPage {
 
         // Setup hints, shown only when something is missing.
         let hints = adw::PreferencesGroup::builder().visible(false).build();
-        let vkms_hint = hint_row("dialog-warning-symbolic", "Extend needs a virtual output");
+        let vkms_hint = hint_row("dialog-warning-symbolic", tr("Extend needs a virtual output"));
         vkms_hint.set_subtitle(
-            "Run <tt>sudo modprobe vkms</tt> (adds Virtual-1), or plug in an HDMI dummy and choose it under Advanced. \
-             To load vkms at every boot: <tt>echo vkms | sudo tee /etc/modules-load.d/vkms.conf</tt>",
+            tr("Run <tt>sudo modprobe vkms</tt> (adds Virtual-1), or plug in an HDMI dummy and choose it under Advanced. \
+             To load vkms at every boot: <tt>echo vkms | sudo tee /etc/modules-load.d/vkms.conf</tt>"),
         );
         vkms_hint.add_suffix(&copy_button("sudo modprobe vkms", toasts));
-        let vkms_check = refresh_button("Check again");
+        let vkms_check = refresh_button(tr("Check again"));
         vkms_hint.add_suffix(&vkms_check);
         let output_hint = hint_row("dialog-warning-symbolic", "");
-        let output_check = refresh_button("Check again");
+        let output_check = refresh_button(tr("Check again"));
         output_hint.add_suffix(&output_check);
-        let osk_hint = hint_row("input-keyboard-symbolic", "No on-screen keyboard");
+        let osk_hint = hint_row("input-keyboard-symbolic", tr("No on-screen keyboard"));
         osk_hint.set_subtitle(
-            "The keyboard button on the phone opens wvkbd on the shared screen. Install it, e.g. <tt>yay -S wvkbd</tt>",
+            tr("The keyboard button on the phone opens wvkbd on the shared screen. Install it, e.g. <tt>yay -S wvkbd</tt>"),
         );
         osk_hint.add_suffix(&copy_button("yay -S wvkbd", toasts));
         for row in [&vkms_hint, &output_hint, &osk_hint] {
@@ -884,58 +886,58 @@ impl DisplayPage {
         }
 
         let mode = adw::ToggleGroup::builder().valign(gtk::Align::Center).homogeneous(true).can_shrink(false).build();
-        mode.add(adw::Toggle::builder().name("extend").label("Extend").tooltip("The phone becomes a second monitor").build());
-        mode.add(adw::Toggle::builder().name("mirror").label("Duplicate").tooltip("Show this PC's screen on the phone").build());
-        let mode_row = adw::ActionRow::builder().title("Mode").build();
+        mode.add(adw::Toggle::builder().name("extend").label(tr("Extend")).tooltip(tr("The phone becomes a second monitor")).build());
+        mode.add(adw::Toggle::builder().name("mirror").label(tr("Duplicate")).tooltip(tr("Show this PC's screen on the phone")).build());
+        let mode_row = adw::ActionRow::builder().title(tr("Mode")).build();
         mode_row.add_suffix(&mode);
         let resolution = adw::ComboRow::builder()
-            .title("Resolution")
-            .model(&gtk::StringList::new(&["Phone native", "Phone default", "Custom"]))
+            .title(tr("Resolution"))
+            .model(&gtk::StringList::new(&[tr("Phone native"), tr("Phone default"), tr("Custom")]))
             .build();
-        let width = spin_row("Width", "Pixels", (prefs::MIN_SIDE, prefs::MAX_SIDE, 8));
-        let height = spin_row("Height", "Pixels", (prefs::MIN_SIDE, prefs::MAX_SIDE, 8));
+        let width = spin_row(tr("Width"), tr("Pixels"), (prefs::MIN_SIDE, prefs::MAX_SIDE, 8));
+        let height = spin_row(tr("Height"), tr("Pixels"), (prefs::MIN_SIDE, prefs::MAX_SIDE, 8));
         let scale_names: Vec<String> = SCALES.iter().map(|s| format!("{s} %")).collect();
         let scale_refs: Vec<&str> = scale_names.iter().map(String::as_str).collect();
         let scale = adw::ComboRow::builder()
-            .title("Display scale")
-            .subtitle("Size of text and windows on the phone; bigger means less room")
+            .title(tr("Display scale"))
+            .subtitle(tr("Size of text and windows on the phone; bigger means less room"))
             .model(&gtk::StringList::new(&scale_refs))
             .build();
         let osk = spin_row(
-            "On-screen keyboard height",
-            "In % of the shared screen, for the keyboard button on the phone",
+            tr("On-screen keyboard height"),
+            tr("In % of the shared screen, for the keyboard button on the phone"),
             (prefs::OSK_MIN, prefs::OSK_MAX, 5),
         );
-        let quality_names: Vec<&str> = QUALITIES.iter().map(|(_, l)| *l).collect();
+        let quality_names: Vec<&str> = QUALITIES.iter().map(|(_, l)| tr(l)).collect();
         let quality = adw::ComboRow::builder()
-            .title("Stream quality")
-            .subtitle("Lower sends less data per frame, which can cut the delay on a busy Wi-Fi")
+            .title(tr("Stream quality"))
+            .subtitle(tr("Lower sends less data per frame, which can cut the delay on a busy Wi-Fi"))
             .model(&gtk::StringList::new(&quality_names))
             .build();
         let fps_names: Vec<String> = FRAME_RATES.iter().map(|f| format!("{f} fps")).collect();
         let fps_refs: Vec<&str> = fps_names.iter().map(String::as_str).collect();
         let fps = adw::ComboRow::builder()
-            .title("Frame rate")
-            .subtitle("At most this many frames per second; fewer means less to encode and send")
+            .title(tr("Frame rate"))
+            .subtitle(tr("At most this many frames per second; fewer means less to encode and send"))
             .model(&gtk::StringList::new(&fps_refs))
             .build();
-        let audio = adw::SwitchRow::builder().title("Send PC audio to the phone").subtitle("Experimental").build();
+        let audio = adw::SwitchRow::builder().title(tr("Send PC audio to the phone")).subtitle(tr("Experimental")).build();
         let rotate = adw::SwitchRow::builder()
-            .title("Rotate with the phone")
-            .subtitle("Experimental · Extend: turns the phone's monitor when you turn the phone")
+            .title(tr("Rotate with the phone"))
+            .subtitle(tr("Experimental · Extend: turns the phone's monitor when you turn the phone"))
             .build();
-        let advanced = adw::ExpanderRow::builder().title("Advanced").subtitle("Which output to extend onto").build();
-        let output = adw::ComboRow::builder().title("Extend onto").model(&gtk::StringList::new(&[])).build();
-        let output_refresh = refresh_button("List the outputs again");
+        let advanced = adw::ExpanderRow::builder().title(tr("Advanced")).subtitle(tr("Which output to extend onto")).build();
+        let output = adw::ComboRow::builder().title(tr("Extend onto")).model(&gtk::StringList::new(&[])).build();
+        let output_refresh = refresh_button(tr("List the outputs again"));
         output.add_suffix(&output_refresh);
         advanced.add_row(&output);
 
         // Layout, Experimental and Advanced groups (the phone-as-display card sits above them).
         let layout_group = adw::PreferencesGroup::builder()
-            .title("Display settings")
+            .title(tr("Display settings"))
             .description(
-                "For Duplicate display and Extend display above. To see the phone's screen on this PC \
-                 instead, use Mirror Screen on the Phone page.",
+                tr("For Duplicate display and Extend display above. To see the phone's screen on this PC \
+                 instead, use Mirror Screen on the Phone page."),
             )
             .build();
         // The mode is picked with the Cross Control cards above; the row stays for its state.
@@ -952,7 +954,7 @@ impl DisplayPage {
         ] {
             layout_group.add(row);
         }
-        let experimental_group = adw::PreferencesGroup::builder().title("Experimental").build();
+        let experimental_group = adw::PreferencesGroup::builder().title(tr("Experimental")).build();
         experimental_group.add(&audio);
         experimental_group.add(&rotate);
         let advanced_group = adw::PreferencesGroup::new();
@@ -1142,7 +1144,10 @@ impl DisplayPage {
         }
         let prefs = {
             let mut st = self.st.borrow_mut();
-            change(&mut st.prefs.display);
+            // Other pages may have changed GUI preferences since this page was constructed.
+            let mut prefs = prefs::load();
+            change(&mut prefs.display);
+            st.prefs = prefs;
             st.prefs.clone()
         };
         if let Err(e) = prefs::save(&prefs) {
@@ -1286,14 +1291,14 @@ impl DisplayPage {
                 interrupt(own);
                 st.signalled.push(own);
                 st.pending = Some(Pending::Stopping { since: now });
-                toasts.push(format!("Phone display failed: {}", st.log.error.as_deref().unwrap_or("unknown error")));
+                toasts.push(crate::tr_format!("Phone display failed: {}", "手机显示失败：{}", st.log.error.as_deref().unwrap_or("unknown error")));
             }
             if let Some(pid) = st.announce.filter(|pid| !pids.contains(pid)) {
                 st.announce = None;
                 if st.log.pid == Some(pid) {
                     match outcome(&st.log) {
-                        Some(Outcome::Stopped(r)) => toasts.push(format!("Phone display: {r}")),
-                        Some(Outcome::Failed(e)) => toasts.push(format!("Phone display failed: {e}")),
+                        Some(Outcome::Stopped(r)) => toasts.push(crate::tr_format!("Phone display: {r}", "手机显示：{r}")),
+                        Some(Outcome::Failed(e)) => toasts.push(crate::tr_format!("Phone display failed: {e}", "手机显示失败：{e}")),
                         None => {}
                     }
                 }
@@ -1449,7 +1454,7 @@ impl DisplayPage {
     /// Why the current settings cannot start right now, if they cannot.
     fn blocked(st: &State, opts: &Opts) -> Option<String> {
         if !st.connected {
-            return Some("Connect the phone first".into());
+            return Some(tr("Connect the phone first").into());
         }
         if opts.mode != Mode::Extend {
             return None;
@@ -1457,7 +1462,7 @@ impl DisplayPage {
         let Some(Ok(outputs)) = &st.outputs else { return None };
         match &opts.output {
             None if outputs.spare_output() && !outputs.has_virtual() => Some("Extend needs a virtual output (see the hint below)".into()),
-            None if !outputs.can_extend() => Some(format!("Extend is not available on {} (see the hint below)", outputs.desktop)),
+            None if !outputs.can_extend() => Some(crate::tr_format!("Extend is not available on {} (see the hint below)", "{} 不支持扩展屏幕（请参阅下方提示）", outputs.desktop)),
             Some(name) if !outputs.list.iter().any(|o| &o.name == name) => Some(format!("{name} is not connected")),
             _ => None,
         }
@@ -1563,30 +1568,30 @@ impl DisplayPage {
         let mut detail_error = false;
         let (status, detail): (String, String) = match (&st.pending, running) {
             (Some(Pending::Restarting { .. }), _) => ("Restarting…".into(), "Applying the new settings".into()),
-            (Some(Pending::Stopping { .. }), Some(_)) => ("Stopping…".into(), "Telling the phone to stop".into()),
+            (Some(Pending::Stopping { .. }), Some(_)) => (tr("Stopping…").into(), "Telling the phone to stop".into()),
             (Some(Pending::Starting { .. }), _) if !logged => {
-                ("Starting…".into(), "Asking the phone to open its display view".into())
+                (tr("Starting…").into(), tr("Asking the phone to open its display view").into())
             }
             (_, Some(r)) if logged => {
                 let opts = st.running_opts(r);
                 let target = log.output.clone().or_else(|| opts.output.clone());
                 let (status, mut detail) = if log.stopped.is_some() {
-                    ("Stopping…".to_owned(), String::new())
+                    (tr("Stopping…").to_owned(), String::new())
                 } else if log.streaming {
                     let size = log.size.map_or(String::new(), |(w, h)| format!(" {w}×{h}"));
                     let what = match (opts.mode, target) {
-                        (Mode::Extend, Some(o)) => format!("Extended onto {o}"),
-                        (Mode::Extend, None) => "Extended onto a virtual output".to_owned(),
-                        (Mode::Mirror, Some(o)) => format!("Showing {o}"),
+                        (Mode::Extend, Some(o)) => crate::tr_format!("Extended onto {o}", "已扩展到 {o}"),
+                        (Mode::Extend, None) => tr("Extended onto a virtual output").to_owned(),
+                        (Mode::Mirror, Some(o)) => crate::tr_format!("Showing {o}", "正在显示 {o}"),
                         (Mode::Mirror, None) => String::new(),
                     };
-                    (format!("Streaming{size} to the phone"), what)
+                    (crate::tr_format!("Streaming{size} to the phone", "正在向手机串流{size}"), what)
                 } else if log.lost {
-                    ("Connection interrupted".to_owned(), "Waiting for the phone…".to_owned())
+                    (tr("Connection interrupted").to_owned(), tr("Waiting for the phone…").to_owned())
                 } else if log.size.is_some() {
-                    ("Connecting…".to_owned(), "The phone answered; starting the stream".to_owned())
+                    (tr("Connecting…").to_owned(), tr("The phone answered; starting the stream").to_owned())
                 } else {
-                    ("Waiting for the phone…".to_owned(), "Smart Connect on the phone opens its display view".to_owned())
+                    (tr("Waiting for the phone…").to_owned(), tr("Smart Connect on the phone opens its display view").to_owned())
                 };
                 if let Some(e) = &log.error {
                     detail = e.clone();
@@ -1594,21 +1599,21 @@ impl DisplayPage {
                 }
                 (status, detail)
             }
-            (_, Some(r)) => ("Running".into(), format!("Started outside Smart Connect: {}", st.running_opts(r).summary())),
+            (_, Some(r)) => (tr("Running").into(), crate::tr_format!("Started outside Smart Connect: {}", "由 Smart Connect 以外的程序启动：{}", st.running_opts(r).summary())),
             (_, None) => {
                 let detail = if !st.connected {
-                    "Connect the phone to start".to_owned()
+                    tr("Connect the phone to start").to_owned()
                 } else {
                     match outcome(log) {
-                        Some(Outcome::Stopped(r)) => format!("Last session: {r}"),
+                        Some(Outcome::Stopped(r)) => crate::tr_format!("Last session: {r}", "上次会话：{r}"),
                         Some(Outcome::Failed(e)) => {
                             detail_error = true;
-                            format!("Last session failed: {e}")
+                            crate::tr_format!("Last session failed: {e}", "上次会话失败：{e}")
                         }
                         None => String::new(),
                     }
                 };
-                ("Off".into(), detail)
+                (tr("Off").into(), detail)
             }
         };
         self.status.set_label(&status);
@@ -1629,16 +1634,16 @@ impl DisplayPage {
         let (label, sensitive, destructive) = if restarting {
             ("Restarting…", false, false)
         } else if running.is_some() {
-            (if stopping { "Stopping…" } else { "Stop" }, !stopping, true)
+            (if stopping { tr("Stopping…") } else { tr("Stop") }, !stopping, true)
         } else if starting {
-            ("Starting…", false, false)
+            (tr("Starting…"), false, false)
         } else {
-            ("Start", blocked.is_none(), false)
+            (tr("Start"), blocked.is_none(), false)
         };
         self.start.set_label(label);
         self.start.set_sensitive(sensitive);
         // Sessions are started with the Cross Control cards above; this button only stops one.
-        self.start.set_visible(label != "Start");
+        self.start.set_visible(label != tr("Start"));
         self.start.set_tooltip_text(if running.is_none() { blocked.as_deref() } else { None });
         if destructive {
             self.start.remove_css_class("suggested-action");
@@ -1659,7 +1664,7 @@ impl DisplayPage {
         self.mode_row.set_subtitle(if extend {
             "The phone becomes a second monitor next to this screen"
         } else {
-            "The phone shows this PC's screen"
+            tr("The phone shows this PC's screen")
         });
         let custom = matches!(desired.size, Size::Fixed(..));
         self.resolution.set_subtitle(match desired.size {
@@ -1695,7 +1700,7 @@ impl DisplayPage {
         self.output_hint.set_visible(missing || unsupported || list_error.is_some());
         if missing {
             self.output_hint.set_title(&glib::markup_escape_text(&format!("{} is not connected", d.output)));
-            self.output_hint.set_subtitle("Plug it in, or choose another output under Advanced.");
+            self.output_hint.set_subtitle(tr("Plug it in, or choose another output under Advanced."));
         } else if unsupported {
             let desktop = listed.map_or("This desktop", |o| o.desktop.as_str());
             self.output_hint.set_title(&glib::markup_escape_text(&format!("{desktop} cannot add a screen for the phone")));
@@ -1704,7 +1709,7 @@ impl DisplayPage {
                  an HDMI dummy plug and choose it under Advanced, or use Duplicate.",
             );
         } else if let Some(e) = &list_error {
-            self.output_hint.set_title("Could not list the screens");
+            self.output_hint.set_title(tr("Could not list the screens"));
             self.output_hint.set_subtitle(&glib::markup_escape_text(e));
         }
         // GNOME: the keyboard button turns on GNOME's own screen keyboard, no wvkbd needed.

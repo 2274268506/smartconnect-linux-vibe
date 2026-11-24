@@ -18,9 +18,45 @@ use serde_json::{json, Value};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    pub language: crate::i18n::Language,
     pub display: DisplayPrefs,
     pub files: FilesPrefs,
     pub apps: AppsPrefs,
+    pub desktop: DesktopPrefs,
+}
+
+/// Phone desktop shown on the PC; separate from PC-to-phone Display preferences.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopPrefs {
+    pub width: u32,
+    pub height: u32,
+    // Older saved sizes were explicit choices; only an absent desktop section defaults to auto.
+    #[serde(rename = "followComputer", default)]
+    pub follow_computer: bool,
+    pub borderless: bool,
+    #[serde(rename = "scalePercent")]
+    pub scale_percent: Option<u32>,
+    pub quality: crate::stream_settings::Quality,
+    pub renderer: crate::desktop_renderer::Renderer,
+    pub scrcpy: crate::desktop_renderer::ScrcpyOptions,
+}
+
+impl Default for DesktopPrefs {
+    fn default() -> Self { Self { width: 1920, height: 1080, follow_computer: true, borderless: false, scale_percent: None, quality: Default::default(), renderer: Default::default(), scrcpy: Default::default() } }
+}
+
+impl DesktopPrefs {
+    pub fn fixed(width: u32, height: u32) -> Self {
+        Self { width, height, follow_computer: false, ..Self::default() }
+    }
+    pub fn valid(&self) -> bool {
+        (640..=3840).contains(&self.width) && (360..=2160).contains(&self.height)
+            && self.width >= self.height && self.width % 2 == 0 && self.height % 2 == 0
+            && self.scale_percent.is_none_or(|scale| (100..=300).contains(&scale)) && self.quality.valid() && ((self.renderer!=crate::desktop_renderer::Renderer::Scrcpy && !self.scrcpy.wake_unlock) || self.scrcpy.valid())
+    }
+
+    pub fn sanitized(self) -> Self { if self.valid() { self } else { Self::default() } }
 }
 
 /// Choices on the Files page (the phone's storage as a FUSE mount).
@@ -48,7 +84,24 @@ pub struct FilesPrefs {
 pub struct AppsPrefs {
     /// Packages opened most recently, newest first (for the Recent row). Capped on save.
     pub recent: Vec<String>,
+    pub streaming: AppStreamingPrefs,
 }
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppStreamingPrefs {
+    pub custom: bool,
+    pub display: crate::app_display::AppDisplay,
+    pub quality: crate::stream_settings::Quality,
+    pub layout: crate::stream_settings::Layout,
+    pub renderer: crate::desktop_renderer::Renderer,
+    pub scrcpy: crate::desktop_renderer::ScrcpyOptions,
+}
+impl AppStreamingPrefs {
+    pub fn valid(&self)->bool {self.display.valid() && ((self.renderer!=crate::desktop_renderer::Renderer::Scrcpy && !self.scrcpy.wake_unlock) || self.scrcpy.valid()) && self.quality.valid() && self.layout.valid() && (!self.layout.fixed || (self.custom && self.layout.width_for_height(self.display.height).is_some_and(|w|w.abs_diff(self.display.width)<=2)))}
+    pub fn sanitized(self)->Self { if self.valid() {self} else {Self::default()} }
+    pub fn requested(&self)->Option<crate::app_display::AppDisplay> { if self.custom {Some(self.display)} else {None} }
+}
+
 
 impl FilesPrefs {
     /// The folder to mount at: the configured one (with a leading `~/` expanded), else `~/Phone`.
@@ -305,6 +358,51 @@ pub fn save(prefs: &Prefs) -> std::io::Result<()> {
     save_shared(&prefs.display)
 }
 
+/// Changing the interface language must not rewrite shared display settings.
+pub fn save_language(language: crate::i18n::Language) -> std::io::Result<()> {
+    save_language_at(&path(), language)
+}
+
+fn save_language_at(path: &Path, language: crate::i18n::Language) -> std::io::Result<()> {
+    save_gui_field(path, "language", serde_json::to_value(language).map_err(std::io::Error::other)?)
+}
+
+pub fn save_desktop(settings: DesktopPrefs) -> std::io::Result<()> {
+    if !settings.valid() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid desktop resolution"));
+    }
+    save_gui_field(&path(), "desktop", serde_json::to_value(settings).map_err(std::io::Error::other)?)
+}
+
+pub fn save_app_streaming(settings:AppStreamingPrefs)->std::io::Result<()> {
+    save_app_streaming_at(&path(), settings)
+}
+fn save_app_streaming_at(path:&Path,settings:AppStreamingPrefs)->std::io::Result<()> {
+    if !settings.valid() {return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"invalid app resolution"));}
+    let mut value=match std::fs::read_to_string(path) {
+        Ok(text)=>serde_json::from_str::<Value>(&text).map_err(std::io::Error::other)?,
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>json!({}),
+        Err(error)=>return Err(error),
+    };
+    let object=value.as_object_mut().ok_or_else(||std::io::Error::other("GUI settings must be an object"))?;
+    let apps=object.entry("apps").or_insert(json!({})).as_object_mut().ok_or_else(||std::io::Error::other("apps settings must be an object"))?;
+    apps.insert("streaming".into(),serde_json::to_value(settings).map_err(std::io::Error::other)?);
+    write_atomic(path,serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?)
+}
+
+fn save_gui_field(path: &Path, key: &str, setting: Value) -> std::io::Result<()> {
+    let mut value = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Value>(&text)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e),
+    };
+    let object = value.as_object_mut().ok_or_else(||
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "GUI settings must be a JSON object"))?;
+    object.insert(key.into(), setting);
+    write_atomic(path, serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?)
+}
+
 pub fn save_shared(display: &DisplayPrefs) -> std::io::Result<()> {
     write_atomic(&display_path(), serde_json::to_string_pretty(&display.shared()).map_err(std::io::Error::other)?)
 }
@@ -312,6 +410,75 @@ pub fn save_shared(display: &DisplayPrefs) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_streaming_settings_preserve_recents_and_other_preferences() {
+        let dir=std::env::temp_dir().join(format!("smartconnect-app-prefs-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();let path=dir.join("gui.json");
+        let original=json!({"language":"zh-CN","desktop":{"width":2880,"height":1920},
+            "apps":{"recent":["com.example.one"],"futureField":true},"otherFuture":{"enabled":true}});
+        std::fs::write(&path,original.to_string()).unwrap();
+        let mut settings=AppStreamingPrefs::default();settings.custom=true;settings.display.width=720;settings.display.height=1280;
+        save_app_streaming_at(&path,settings.clone()).unwrap();
+        let saved:Value=serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["apps"]["recent"],original["apps"]["recent"]);assert_eq!(saved["apps"]["futureField"],true);
+        assert_eq!(saved["desktop"],original["desktop"]);assert_eq!(saved["language"],original["language"]);
+        assert_eq!(saved["otherFuture"],original["otherFuture"]);
+        assert_eq!(saved["apps"]["streaming"]["display"]["width"],720);
+        settings.display.width=721;assert!(save_app_streaming_at(&path,settings).is_err());
+        let old:Prefs=serde_json::from_value(json!({"apps":{"recent":[]}})).unwrap();assert!(!old.apps.streaming.custom);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn desktop_settings_default_round_trip_and_reject_invalid_dimensions() {
+        let old: Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.desktop, DesktopPrefs::default());
+        assert!(old.desktop.follow_computer);
+        let legacy: Prefs = serde_json::from_value(json!({"desktop":{"width":1280,"height":720}})).unwrap();
+        assert!(!legacy.desktop.follow_computer, "keep an older explicit size");
+        assert!(!legacy.desktop.borderless);
+        assert_eq!(legacy.desktop.scale_percent,None);
+        let scaled: Prefs = serde_json::from_value(json!({"desktop":{"width":1920,"height":1080,"scalePercent":200}})).unwrap();
+        assert!(scaled.desktop.valid());
+        assert_eq!(scaled.desktop.scale_percent,Some(200));
+        let custom = DesktopPrefs::fixed(2560, 1440);
+        assert!(custom.valid());
+        let prefs: Prefs = serde_json::from_value(json!({"desktop":custom,"language":"zh-CN"})).unwrap();
+        assert_eq!(prefs.desktop, custom);
+        assert_eq!(prefs.language, crate::i18n::Language::Chinese);
+        for dimensions in [(1281,720),(0,0),(720,1280),(7680,4320)] {
+            let settings = DesktopPrefs::fixed(dimensions.0, dimensions.1);
+            assert!(!settings.valid());
+            assert_eq!(settings.sanitized(), DesktopPrefs::default());
+        }
+    }
+
+    #[test]
+    fn changing_language_preserves_other_settings_and_rejects_corrupt_files() {
+        let dir = std::env::temp_dir().join(format!("smartconnect-language-test-{}-{}",
+            std::process::id(), crate::lastdevice::now_secs()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gui.json");
+        let shared = dir.join("display.json");
+        std::fs::write(&shared, "shared-display-sentinel").unwrap();
+        let original = json!({"files":{"mountDir":"/tmp/phone"},"apps":{"recent":["example.app"]},
+            "display":{"fps":30},"futureSetting":{"keep":true}});
+        std::fs::write(&path, original.to_string()).unwrap();
+        save_language_at(&path, crate::i18n::Language::Chinese).unwrap();
+        let changed: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut expected = original;
+        expected["language"] = json!("zh-CN");
+        assert_eq!(changed, expected);
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "shared-display-sentinel");
+        let prefs: Prefs = serde_json::from_value(changed).unwrap();
+        assert_eq!(prefs.language, crate::i18n::Language::Chinese);
+        assert_eq!(prefs.display.fps, 30);
+        std::fs::write(&path, "broken JSON").unwrap();
+        assert!(save_language_at(&path, crate::i18n::Language::English).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken JSON");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn missing_and_bad_fields_fall_back_to_defaults() {

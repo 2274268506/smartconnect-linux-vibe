@@ -50,3 +50,55 @@ published. The public protocol reference is [`docs/protocol/`](../docs/protocol/
 - [display-any-desktop.md](display-any-desktop.md) — phone-as-display on GNOME, KDE, Hyprland, sway and niri: per-desktop capture/extend/input backends, --list-outputs
 - [cross-control-modes-page.md](cross-control-modes-page.md) — Cross Control modes at the top of the GTK Display tab (merged 2026-10-25): the three Windows modes (shared mouse/keyboard, Duplicate, Extend via the Display page), drag-the-phone position editor saved to `crosscontrol.json` (edge + span) that crosscontrol reads; tile tap brings the page forward
 - [appimage.md](appimage.md) — AppImage for any distribution (Arch + quick-sharun, everything bundled), first-run Set up window, --install/--uninstall, pairing-window firewall hint
+
+- [mirror-playback-recovery.md](mirror-playback-recovery.md) — Phone-to-PC receive recovery after packet loss, bounded decoded-frame queue, playback diagnostics and synthetic RTP regression tests.
+
+- [gui-language-switch.md](gui-language-switch.md) — GTK language selector, built-in English/Simplified Chinese translations, locale resolution, preference persistence and restart-to-apply flow.
+
+- [mobile-desktop-page.md](mobile-desktop-page.md) — Phone mobile desktop UI, saved resolution presets/custom sizes, capability-checked host controls, CLI --size and reported stream dimensions.
+
+- [gui-window-close.md](gui-window-close.md) — Nonblocking, coalesced tray updates for main-window close/reopen responsiveness, with stalled-service and GTK regression tests.
+
+- [notification-counts.md](notification-counts.md) — Distinguish unread SMS/MMS from forwarded app notifications; match the Phone shortcut and notification-list count after local dismissals.
+
+- [mirror-video-stalls.md](mirror-video-stalls.md) — metadata-only video/input progress, bounded keyframe retries after decode/input stalls, and lost-feedback media regression.
+
+- [sms-unread-refresh.md](sms-unread-refresh.md) — historical metadata-polling experiment and removal at the user’s request; current unread status follows phone pushes.
+
+- [mirror-udp-buffer.md](mirror-udp-buffer.md) — high-resolution burst loss, per-libnice-socket receive buffers, kernel-limit diagnostics and socket integration tests.
+
+- [desktop-app-scaling.md](desktop-app-scaling.md) — independent desktop app density, default monitor scaling, restart-to-apply controls and density diagnostics.
+
+- [notification-device-debug.md](notification-device-debug.md) — ADB diagnosis of allowed-app sharing, source-app permissions, and list-only synchronization under KDE Do Not Disturb.
+
+- [mirroring-log-viewer.md](mirroring-log-viewer.md) — bounded persistent diagnostics, shared redaction/storage, live GUI search/export and offline CLI log viewing.
+
+- [app-custom-resolution.md](app-custom-resolution.md) — independent custom app geometry/DPI, automatic defaults, per-launch queue isolation, GUI controls and actual-size diagnostics.
+
+- [mirror-ice-path-timing.md](mirror-ice-path-timing.md) — identify Bluetooth PAN video bottlenecks, bind ICE gathering to selected addresses, and expose bounded pre/post-jitter metadata.
+
+- [stream-quality-native-fit.md](stream-quality-native-fit.md) — independent app/desktop quality caps, fixed app ratios, physical-pixel fill calculations and XWayland aspect/native-window hints.
+
+- [scrcpy-existing-desktop.md](scrcpy-existing-desktop.md) — real-device validation of scrcpy capturing a complete Smart Connect desktop, owner-session lifetime and local hardware-decode behavior.
+
+- [scrcpy-desktop-integration.md](scrcpy-desktop-integration.md) — host-owned scrcpy desktop backend, authorized ADB selection, windowless owner stream, asynchronous startup and linked cleanup.
+
+- [scrcpy-app-fullscreen-i18n.md](scrcpy-app-fullscreen-i18n.md) — fullscreen PC-matched desktops, scrcpy app sessions with native fit and isolated errors, and four bundled UI languages with English default.
+
+- [scrcpy-fold-cancel.md](scrcpy-fold-cancel.md) — folded Android capture power recovery, owned helper lifetime, cancel-before-offer controls and late-reply suppression.
+
+- [unicode-title-adb-wake.md](unicode-title-adb-wake.md) — UTF-8 X11 captions for KDE and cancellable optional ADB wake/keyguard preparation before app/desktop creation.
+
+- [scrcpy-folded-input.md](scrcpy-folded-input.md) — noninteractive mirror input diagnosis, source-bound UHID mouse selection, unchanged SDK keyboard and relative-capture controls.
+
+- [clipboard-image-validation.md](clipboard-image-validation.md) — strict incoming clipboard-image metadata validation (upstream PR #6).
+- [usb-cable.md](usb-cable.md) — native USB cable discovery, handshake and optional NetworkManager profile (upstream PR #8).
+- [mirror-rotation.md](mirror-rotation.md) — native rotation and source-coordinate input handling, adapted for GPU rendering and fixed layouts (upstream PR #9).
+
+- [upstream-pr-integration.md](upstream-pr-integration.md) — local absorption of PRs #6–#10, conflict resolution, SMS/USB safety adaptations and validation.
+
+- [scrcpy-input-settings.md](scrcpy-input-settings.md) — child-scoped relative mouse speed and independent source-bound keyboard for the phone IME.
+
+- [scrcpy-computer-ime.md](scrcpy-computer-ime.md) — optional direct computer composition and session-bound Unicode delivery from scrcpy SDL3 windows.
+
+- [scrcpy-audio.md](scrcpy-audio.md) — remove forced no-audio, control app/desktop audio and optionally select playback capture for independent PC volume.
