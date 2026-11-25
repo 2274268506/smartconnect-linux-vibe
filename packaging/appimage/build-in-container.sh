@@ -25,7 +25,7 @@ pacman -Syu --noconfirm --needed \
 	gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav \
 	gst-plugin-pipewire gst-plugin-va libnice pipewire libpulse \
 	mesa intel-media-driver libva \
-	wl-clipboard avahi libxkbcommon libnotify \
+	wl-clipboard avahi libxkbcommon libnotify sdl3 \
 	adwaita-icon-theme >/dev/null
 
 echo "==> Rust"
@@ -87,7 +87,7 @@ export DESKTOP=/build/packaging/dev.smartconnect.Linux.desktop
 export ICON=/build/packaging/dev.smartconnect.Linux.svg
 export MAIN_BIN=smartconnect-gui
 export DEPLOY_GTK=1 DEPLOY_GSTREAMER=1 DEPLOY_OPENGL=1 DEPLOY_PIPEWIRE=1 DEPLOY_PULSE=1 DEPLOY_P11KIT=1
-export UPINFO="gh-releases-zsync|rudrahnpatel|smartconnect-linux|latest|*x86_64.AppImage.zsync"
+export UPINFO="gh-releases-zsync|2274268506|smartconnect-linux-vibe|latest|*x86_64.AppImage.zsync"
 export OUTPUT_APPIMAGE=1
 # The programs need a phone, a session bus and a compositor; there is none here, so only a short
 # trace run each (the GStreamer plugins and VA drivers are passed explicitly instead).

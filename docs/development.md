@@ -365,3 +365,7 @@ Input settings regressions also cover old-preference defaults, strict 25–400% 
 Scrcpy audio regressions cover old settings defaulting to enabled, boolean validation, mutually exclusive output/no-audio arguments, absence of microphone/require-audio flags, and independent app/desktop GUI persistence. Device validation should check the owned scrcpy playback stream without recording private audio or changing system-wide volume/mute settings.
 
 Independent audio tests cover output/playback/no-audio precedence, Android 13 SDK gating including unknown SDK failure, independent app/desktop persistence and disabling the control while audio is off. Device verification should compare ordinary media at phone media volume zero/nonzero without recording private audio; the shell tone helper used for earlier diagnostics did not establish a meaningful media signal. Do not treat an active desktop playback node as proof of audible volume independence.
+
+## Vibe release packaging
+
+All workspace packages and the Noctalia manifest use 0.2.0. Run the workspace release tests/build before packaging. Build the native Arch package with `CARGO_TARGET_DIR="$(pwd)/target" makepkg --dir packaging/arch --nocheck` only after those tests pass. The package is dynamically linked for current Arch x86_64, not a universal binary. Source archives must come from `git archive` of the release commit, excluding local AGENTS/settings/build output. Publish checksums alongside the native package and source archive; verify package contents and an extracted daemon version before publication.

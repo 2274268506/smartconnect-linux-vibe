@@ -47,7 +47,7 @@ settings are kept. Remove everything with `./packaging/uninstall.sh` (same `--pr
 `--purge` also deletes pairings, identity, preferences and caches; `--dry-run` lists what would go).
 
 Arch Linux: `cd packaging/arch && makepkg -si` builds a package from this checkout instead (binaries
-in `/usr/bin`, the plugin in `/usr/share/smartconnect-linux/` for each user to copy).
+in `/usr/bin`, the plugin in `/usr/share/smartconnect-linux-vibe/` for each user to copy).
 
 ## How the programs find each other
 

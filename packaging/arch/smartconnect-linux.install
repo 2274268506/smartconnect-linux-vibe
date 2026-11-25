@@ -3,16 +3,16 @@ _plugin_hint() {
   # Noctalia Shell panel plugin: a copy, because Noctalia saves the plugin's settings in its
   # directory (your settings.json is kept on later copies). Then enable it under Settings > Plugins.
   mkdir -p ~/.config/noctalia/plugins/smart-connect
-  cp -r /usr/share/smartconnect-linux/noctalia-plugin/smart-connect/. ~/.config/noctalia/plugins/smart-connect/
+  cp -r /usr/share/smartconnect-linux-vibe/noctalia-plugin/smart-connect/. ~/.config/noctalia/plugins/smart-connect/
 EOF
 }
 
 post_install() {
-  echo 'Smart Connect for Linux, per user:'
+  echo 'Smart Connect Linux Vibe, per user:'
   echo '  systemctl --user enable --now smartconnectd     # the daemon, with your graphical session'
   echo '  smartconnectd pair                              # a QR to scan in Smart Connect on the phone'
   _plugin_hint
-  echo 'Firewall (TCP 52020 and mDNS), vkms and v4l2loopback: /usr/share/doc/smartconnect-linux/README.md'
+  echo 'Firewall (TCP 52020 and mDNS), vkms and v4l2loopback: /usr/share/doc/smartconnect-linux-vibe/README.md'
 }
 
 post_upgrade() {

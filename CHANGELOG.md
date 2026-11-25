@@ -8,7 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
+
+- First public Smart Connect Linux Vibe release, retaining upstream attribution and MIT licensing, with an Arch x86_64 package, source archive, checksums and Chinese installation guide.
 
 - Optional independent audio mode for scrcpy app/desktop sessions, selecting Android 13+ playback capture while retaining output capture as a compatibility choice.
 

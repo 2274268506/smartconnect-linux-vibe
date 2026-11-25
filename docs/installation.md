@@ -4,7 +4,8 @@ This page covers what to install, how to build and install everything, how to ru
 systemd user service, which firewall ports to open, and how to set up the optional front-ends. The
 [README quick start](../README.md#quick-start) is the short version.
 
-- [AppImage](#appimage): the easiest way, any distribution, nothing to build
+- [Vibe release packages](#vibe-release-packages) · [Chinese installation guide](../INSTALL.zh-CN.md)
+- [AppImage build reference](#appimage)
 - [What you need](#what-you-need)
 - [Packages](#packages): [Arch Linux](#arch-linux), [Debian and Ubuntu](#debian-and-ubuntu-untested), [Fedora](#fedora-untested)
 - [System services](#system-services)
@@ -15,49 +16,30 @@ systemd user service, which firewall ports to open, and how to set up the option
 - [Optional: vkms and v4l2loopback](#optional-kernel-modules)
 - [Updating and uninstalling](#updating-and-uninstalling)
 
+## Vibe release packages
+
+This fork is modified from [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux), preserving its MIT license and credits. Download this fork's artifacts from [its own releases](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest), not upstream releases.
+
+Version **v0.2.0** ships an **x86_64 Arch Linux / EndeavourOS package**, a source archive and SHA-256 checksums. The native package depends on current Arch shared libraries; it is not a portable Ubuntu/Fedora binary.
+
+```sh
+# Download the package and SHA256SUMS into the same directory first.
+sha256sum --ignore-missing -c SHA256SUMS
+sudo pacman -Syu
+sudo pacman -U ./smartconnect-linux-vibe-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -S --needed scrcpy android-tools wl-clipboard
+sudo systemctl enable --now avahi-daemon bluetooth
+systemctl --user enable --now smartconnectd
+smartconnect-gui
+```
+
+Run the GUI as your desktop user. Choose **Pair new phone…** from the device menu and scan the QR in the phone's stock Smart Connect app. For scrcpy, separately authorize USB/network ADB. Full folded input requires Android 15+/scrcpy 4+; computer IME needs scrcpy 5+; independent audio needs Android 13+ and a capturable app.
+
+Other distributions should install the development dependencies below, check out tag `v0.2.0` from this fork and run `./packaging/install.sh --enable`. Install SDL3 development headers before building for computer IME support; newer GTK/GStreamer requirements may exceed old LTS repositories. See [the detailed Chinese guide](../INSTALL.zh-CN.md).
+
 ## AppImage
 
-One file with every program and library inside (GTK, libadwaita, GStreamer with the WebRTC,
-VA-API and x264 plugins, wl-clipboard, avahi's tools, even glibc), so it doesn't depend on your
-distribution's versions. Built on Arch Linux with
-[quick-sharun](https://github.com/pkgforge-dev/Anylinux-AppImages); x86_64 only.
-
-1. Download `Smart_Connect-<version>-anylinux-x86_64.AppImage` from the
-   [Releases page](https://github.com/rudrahnpatel/smartconnect-linux/releases), make it executable
-   (`chmod +x Smart_Connect-*.AppImage`, or *Executable as program* in the file manager's
-   properties) and open it.
-2. The first time, a welcome window offers **Set up**. That is the same as running
-   `./Smart_Connect-*.AppImage --install --enable` and needs no password:
-   - unpacks itself to `~/.local/opt/smartconnect-linux` (about 600 MB) and links the programs into
-     `~/.local/bin`;
-   - adds *Smart Connect* to your applications, the systemd user service `smartconnectd`
-     (enabled and started), the hidden `dev.smartconnect.Display.desktop` entry KDE Plasma needs
-     to trust the display helper, and the Noctalia plugin when `~/.config/noctalia` exists (its
-     settings are kept);
-   - then opens the installed app. You can delete the AppImage file afterwards.
-
-   **Try without installing** runs it straight from the file instead. The daemon then only runs
-   while the app is open.
-3. Pair: **Pair new phone…** in the device menu, then scan the code with Smart Connect on the phone.
-   If firewalld runs and its default zone doesn't allow port 52020, the pairing window says so;
-   on GNOME and KDE its **Allow** button opens the port (firewalld asks for your password),
-   elsewhere it gives the commands to copy. With ufw it shows the commands to run.
-
-Updating: open the newer AppImage; the welcome window then offers **Update** (or run it with
-`--install`). Uninstalling: `./Smart_Connect-*.AppImage --uninstall` (or
-`~/.local/opt/smartconnect-linux/AppRun --uninstall`) removes the programs, the launcher and the
-service and keeps your pairing and settings. Every bundled program can be run through the file:
-`./Smart_Connect-*.AppImage smartconnectd status`.
-
-Still needed from the system: a Wayland desktop with a systemd user session, `avahi-daemon`
-running (most distributions run it; Arch: `sudo systemctl enable --now avahi-daemon`), a VA-API
-driver for hardware video is optional (the AppImage ships Intel's and Mesa's; NVIDIA falls back to
-software), `fusermount3` for browsing the phone's files, and, only if you use them, the firewall
-rules, `v4l2loopback` for the webcam and `vkms` for Extend on niri (see below).
-
-Building it yourself: `packaging/appimage/make-appimage.sh` (needs Docker or Podman; about 15
-minutes the first time) writes `dist/Smart_Connect-<version>-anylinux-x86_64.AppImage` and its
-`.zsync` file.
+No AppImage from this fork is included in **v0.2.0**. The upstream AppImage does not include this fork's changes. The inherited build scripts remain available for development: `packaging/appimage/make-appimage.sh` needs Docker/Podman and builds a bundled x86_64 image. Its update feed now points to this fork. Building/portability of that image has not been validated for this release; use the native package or source installation above.
 
 ## What you need
 
@@ -214,8 +196,9 @@ The repository is one Cargo workspace: the daemon is the root package, and `mirr
 ### `packaging/install.sh`
 
 ```sh
-git clone <repository-url> smartconnect-linux
-cd smartconnect-linux
+git clone https://github.com/2274268506/smartconnect-linux-vibe.git
+cd smartconnect-linux-vibe
+git checkout v0.2.0
 ./packaging/install.sh            # add --enable to also start the daemon as a service
 ```
 
@@ -273,7 +256,7 @@ makepkg -si
 ```
 
 It installs the binaries to `/usr/bin`, the unit to `/usr/lib/systemd/user/`, the launcher and icon,
-and the Noctalia plugin to `/usr/share/smartconnect-linux/noctalia-plugin/smart-connect` for each
+and the Noctalia plugin to `/usr/share/smartconnect-linux-vibe/noctalia-plugin/smart-connect` for each
 user to copy (the install message shows the commands). Each user then runs
 `systemctl --user enable --now smartconnectd`. Use either the package or `install.sh`, not both.
 Set `CARGO_TARGET_DIR` to reuse an existing build directory. The PKGBUILD turns off makepkg's `lto`

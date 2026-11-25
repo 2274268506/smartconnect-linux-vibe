@@ -7,7 +7,7 @@ serve`, a read-only NFSv3 *server* over the same mutual TLS; see
 [PC→phone: `serve`](#pcphone-sharing-serve-verified-on-a-phone) below). Writing to the
 phone is not built. The **fex pull client is implemented and verified on a device** for the app
 icons the phone offers on service 17 ([`fex/`](../../fex/), `smartconnect-fex`); clipboard images,
-which use the same transfer server, are not wired to it yet. This page documents
+which use the same transfer server, are now wired to the fex image-transfer client/server; real-phone image validation is still pending. This page documents
 the three mechanisms Smart Connect uses to move file *bytes* — file browsing, clipboard
 images/files, drag-and-drop and "send files" — reconstructed from the phone app (JADX) and the
 Windows binaries (Ghidra), and confirmed live for the File Station / NFS (phone→PC) path.
@@ -530,7 +530,7 @@ See [clipboard.md](clipboard.md#image-and-file-clips) for the service-9 signalli
 | NFS transport `SOCKET_DT2` (QUIC tunnel) | **Not needed** | Only if the PC asks for `dt2type:3`; smartconnect-linux simply won't |
 | fex LAN transport (which socket) | **Ready** | TCP to an advertised `[50000,59999]` port, OBSERVED |
 | fex pull (TLS pin, WebSocket frames, `/download` zip, `status`) | **Implemented, verified on a device** | [`fex/`](../../fex/): `smartconnect-fex` + the daemon's app-icon fetch; see [§3](#the-lan-pull-protocol-https--a-websocket-of-text-frames-observed-on-a-device) |
-| fex for clipboard images | **Client ready, not wired** | Same server family (INFERRED); zip vs `/downloadFile` mode to confirm with one image clip |
+| fex for clipboard images | **Implemented, device verification pending** | Image push/pull wired to clipboard handling; non-image file transfer remains unsupported |
 
 ### Verdict: file access is implementable in pure Rust on a LAN
 

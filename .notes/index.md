@@ -102,3 +102,5 @@ published. The public protocol reference is [`docs/protocol/`](../docs/protocol/
 - [scrcpy-computer-ime.md](scrcpy-computer-ime.md) — optional direct computer composition and session-bound Unicode delivery from scrcpy SDL3 windows.
 
 - [scrcpy-audio.md](scrcpy-audio.md) — remove forced no-audio, control app/desktop audio and optionally select playback capture for independent PC volume.
+
+- [vibe-release.md](vibe-release.md) — upstream attribution, v0.2.0 versions, public fork release, native Arch packaging and Chinese install guide.

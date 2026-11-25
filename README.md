@@ -1,12 +1,16 @@
 # smartconnect-linux-vibe
 
-**Use Motorola's Smart Connect with a Linux PC.**
+**本项目修改自 [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux)。保留原项目 MIT 许可证及版权声明，感谢上游作者与贡献者。**
 
-A vibe-developed fork of [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux), with integrated scrcpy app/desktop streaming, foldable-device input fixes, multilingual controls, computer/phone input methods, and independent PC audio capture. The original project and its license are preserved; executable names remain unchanged.
+这是一个以 vibe coding 方式持续改进的 Linux Smart Connect 分支：在上游功能基础上，增加 scrcpy 应用投屏与完整桌面模式、折叠手机输入兼容、自定义分辨率/码率/帧率、多语言、电脑/手机输入法，以及独立于手机媒体音量的电脑音频采集。
+
+**当前版本：v0.2.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
+
+The project is modified from the upstream repository linked above. It preserves the original license, credits and executable names. The scrcpy backend is optional and requires authorized ADB; the original Smart Connect backend does not require ADB.
 
 smartconnect-linux makes a Linux desktop show up in Motorola's **Smart Connect** phone app as if it
-were a Windows PC. The phone runs the stock, unmodified app: no root, no extra app, no developer
-options. Pair once by scanning a QR code, and you get:
+were a Windows PC. Core features use the stock, unmodified phone app without root or developer
+options; the optional scrcpy backend additionally requires authorized ADB. Pair once by scanning a QR code, and you get:
 
 - phone notifications on the desktop, with quick reply
 - clipboard sync, both ways
@@ -39,27 +43,32 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 <details open>
 <summary><h2>Quick start</h2></summary>
 
-**Easiest: the AppImage** (any distribution from about 2022 on, nothing to build or install first):
+**Arch Linux / EndeavourOS（x86_64）：** 从[本仓库 Release](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest)下载 `.pkg.tar.zst` 安装包和 `SHA256SUMS`，在同一目录执行：
 
-1. Download `Smart_Connect-…-x86_64.AppImage` from the
-   [Releases page](https://github.com/rudrahnpatel/smartconnect-linux/releases).
-2. Make it executable (file manager: *Properties → Executable as program*, or
-   `chmod +x Smart_Connect-*.AppImage`) and open it.
-3. Press **Set up** (no password needed). Smart Connect opens: choose **Pair new phone…**, then on
-   the phone open Smart Connect, tap **+** → **Scan QR code** and scan the code.
+```sh
+sha256sum --ignore-missing -c SHA256SUMS
+sudo pacman -Syu
+sudo pacman -U ./smartconnect-linux-vibe-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -S --needed scrcpy android-tools wl-clipboard
+sudo systemctl enable --now avahi-daemon bluetooth
+systemctl --user enable --now smartconnectd
+smartconnect-gui
+```
 
-If a firewall blocks the phone, the pairing window says so and offers to allow it. Updating: open
-a newer AppImage and press **Update**. See [the AppImage section](docs/installation.md#appimage).
+不要使用 `sudo` 启动 GUI。其他发行版请按[源码安装说明](INSTALL.zh-CN.md#其他发行版源码安装)构建；本版本不提供通用 AppImage，也不能将 Arch 包直接用于 Ubuntu/Fedora。
 
 **From source:**
 
 ```sh
 # Arch Linux; other distributions: docs/installation.md#packages
 sudo pacman -S --needed git base-devel rust avahi bluez wl-clipboard gstreamer \
-  gst-plugins-{base,good,bad} libnice gst-libav gst-plugin-va gtk4 libadwaita fuse3
+  gst-plugins-{base,good,bad} libnice gst-libav gst-plugin-va gtk4 libadwaita fuse3 \
+  sdl3 scrcpy android-tools pkgconf
 sudo systemctl enable --now avahi-daemon bluetooth
 
-git clone https://github.com/rudrahnpatel/smartconnect-linux.git && cd smartconnect-linux
+git clone https://github.com/2274268506/smartconnect-linux-vibe.git
+cd smartconnect-linux-vibe
+git checkout v0.2.0
 ./packaging/install.sh --enable           # build, install to ~/.local, start the user service
 
 # firewalld example; see docs/installation.md for ufw

@@ -5,18 +5,22 @@
 #   cd packaging/arch && makepkg -si
 # Set CARGO_TARGET_DIR to reuse an existing build directory.
 
-pkgname=smartconnect-linux
-pkgver=0.1.0
+pkgname=smartconnect-linux-vibe
+pkgver=0.2.0
 pkgrel=1
-pkgdesc='Unofficial Linux peer for the Motorola Smart Connect phone app'
-# Set once the repository is public: url='https://github.com/<owner>/smartconnect-linux'
+pkgdesc='Smart Connect Linux Vibe: scrcpy desktop/app streaming, input methods and independent audio'
+url='https://github.com/2274268506/smartconnect-linux-vibe'
+provides=('smartconnect-linux')
+conflicts=('smartconnect-linux' 'smartconnect-linux-git')
 arch=('x86_64')
 license=('MIT')
 depends=('avahi' 'dbus' 'glib2' 'glibc' 'gst-plugins-bad' 'gst-plugins-bad-libs'
-         'gst-plugins-base-libs' 'gst-plugins-good' 'gstreamer' 'gtk4' 'hicolor-icon-theme'
-         'libadwaita' 'libgcc' 'libnice' 'pango')
-makedepends=('cargo' 'pkgconf')
-optdepends=('gst-plugin-va: hardware H.264 decoding and encoding (video needs this or gst-libav)'
+         'gst-plugins-base-libs' 'gst-plugins-good' 'gstreamer>=1.22' 'gtk4>=4.18' 'hicolor-icon-theme'
+         'libadwaita>=1.7' 'libgcc' 'libnice' 'pango')
+makedepends=('cargo' 'pkgconf' 'sdl3')
+optdepends=('scrcpy: optional app/desktop renderer; version 5+ for computer IME'
+            'android-tools: authorized ADB connection for scrcpy and optional wake/unlock'
+            'gst-plugin-va: hardware H.264 decoding and encoding (video needs this or gst-libav)'
             'gst-libav: software H.264 decoding'
             'gst-plugins-ugly: software H.264 encoding for the phone as a display'
             'gst-plugin-pipewire: screen capture for the phone as a display, webcam fallback'
@@ -31,7 +35,7 @@ optdepends=('gst-plugin-va: hardware H.264 decoding and encoding (video needs th
 install=smartconnect-linux.install
 # makepkg's default lto option compiles ring's C code as GCC LTO bitcode, which the Rust link
 # cannot resolve (undefined ring_core_* symbols in smartconnect-fex and smartconnect-files).
-options=('!lto')
+options=('!lto' '!debug')
 
 _root="$(cd "$startdir/../.." && pwd)"
 _bins=(smartconnectd smartconnect-mirror smartconnect-crosscontrol smartconnect-display
@@ -74,7 +78,10 @@ package() {
     "$pkgdir/usr/share/applications/dev.smartconnect.Linux.desktop"
   install -Dm644 "$_root/packaging/dev.smartconnect.Linux.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.smartconnect.Linux.svg"
-  install -Dm644 "$_root/packaging/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 "$_root/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/doc/$pkgname/LICENSE"
+  install -Dm644 "$_root/INSTALL.zh-CN.md" "$pkgdir/usr/share/doc/$pkgname/INSTALL.zh-CN.md"
+  cp -a "$_root/docs" "$pkgdir/usr/share/doc/$pkgname/docs"
   install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   # Noctalia looks for plugins per user; smartconnect-linux.install says how to link this copy.

@@ -175,17 +175,17 @@ are absent there are still used on the wire.
 | id | Name | Windows advertises | Status in this project | Doc |
 |---|---|---|---|---|
 | 0 | Manager: handshake, pairing commit, disconnect | 3 / - | Implemented, verified on a device | [pairing-and-discovery.md](pairing-and-discovery.md) |
-| 1 | Session control for mirror, desktop and virtual-phone views | 10 / 2 | PC-started mirror implemented and verified; phone-started views (Screen share and Mobile desktop tiles, behind `--extra-tiles 1`) and the PC-started desktop view implemented, not verified | [mirroring.md](mirroring.md) |
-| 2 | File exchange ("fex" / FileEx) | 5 / 3 | The fex pull is implemented (used for service 17 app icons); service 2 offers themselves (clipboard images) not wired yet | [file-exchange.md](file-exchange.md#3-fex--fileex-service-2) |
+| 1 | Session control for mirror, desktop and virtual-phone views | 10 / 2 | PC-started mirror and mobile-desktop controls implemented; scrcpy app/desktop paths verified locally, phone-started paths less tested | [mirroring.md](mirroring.md) |
+| 2 | File exchange ("fex" / FileEx) | 5 / 3 | Fex pull and bidirectional clipboard-image offers implemented; app icons verified, clipboard-image device verification pending | [file-exchange.md](file-exchange.md#3-fex--fileex-service-2) |
 | 3 | Webcam | 3 / 3 | Implemented and advertised; a live session and the front/back camera switch verified with a phone | [webcam.md](webcam.md) |
 | 5 | Notifications (apps on the phone's show list) | 2 / 2 | Implemented, verified | [notifications.md](notifications.md) |
 | 7 | Windows-internal (embedded web view and media plugins) | - / - | Not used on the phone link | - |
 | 8 | Web-view messages; the phone sends one while it shows a confirmation screen | - / - | Ignored | - |
-| 9 | Clipboard | 4 / 3 | Text implemented and verified; image/file clips recognised, not fetched yet | [clipboard.md](clipboard.md) |
+| 9 | Clipboard | 4 / 3 | Text implemented and verified; image transfers implemented both ways, non-image file transfer unsupported | [clipboard.md](clipboard.md) |
 | 10 | Display information for the phone's desktop mode | - / - | Not implemented | - |
 | 13 | Hotspot | 1 / 2 | Implemented, not verified on a device | [hotspot.md](hotspot.md) |
 | 15 | App Stream: WebRTC signalling for mirroring and per-app windows | 16 / 3 | Implemented, verified | [mirroring.md](mirroring.md), [app-streaming.md](app-streaming.md) |
-| 16 | Input, PC to phone | - / 3 | Implemented; mouse verified | [mirroring.md](mirroring.md#service-16-input) |
+| 16 | Input, PC to phone | - / 3 | Implemented; mouse and committed Unicode text verified | [mirroring.md](mirroring.md#service-16-input) |
 | 17 | App list | - / - | List and icons implemented, icons verified (downloaded over fex on every list) | [app-streaming.md](app-streaming.md#service-17-app-list) |
 | 18 | Unknown | 1 / - | - | - |
 | 19 | Pairing helper: QR `wsData.serviceId`, and the source of tile-initiated requests | - / - | Used in the QR | [pairing-and-discovery.md](pairing-and-discovery.md) |
@@ -199,7 +199,7 @@ are absent there are still used on the wire.
 | 32, 36 | Unknown | 2, 1 / - | - | - |
 | 37 | Notifications (apps not on the show list) | - / - | Implemented | [notifications.md](notifications.md) |
 | 100 | Messages status (`cmd 1018`, sent from service 204) | - / - | Implemented (read only) | [sms.md](sms.md) |
-| 168 | File Station (`cmd=1001` NFS handshake, both directions) | - / 3 | Implemented; phone→PC mount verified, PC→phone `serve` not verified | [file-exchange.md](file-exchange.md#the-cmd1001-handshake-observed--and-the-pc-chooses-the-transport) |
+| 168 | File Station (`cmd=1001` NFS handshake, both directions) | - / 3 | Implemented; read-only mounts and PC sharing/browsing available; general file writes remain unsupported | [file-exchange.md](file-exchange.md#the-cmd1001-handshake-observed--and-the-pc-chooses-the-transport) |
 | 201 | Windows-internal page id (File station WebView), not on the wire | - / 3 | - | [file-exchange.md](file-exchange.md#1-tunnelled-nfsv3-file-access) |
 | 202 | PC screen to the phone ("R4SS") | - / 1 | Implemented; mirror and extend video, display scale and the keyboard button verified; touch input, rotation, audio and phone-started sessions not yet | [phone-as-display.md](phone-as-display.md) |
 | 204 | Messages (SMS/MMS) | 1 / 1 | SMS implemented, not verified end to end | [sms.md](sms.md) |

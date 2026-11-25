@@ -105,11 +105,10 @@ sequenceDiagram
 
 ## Image and file clips
 
-**Status in this project: not implemented** (text only). This section documents the control half,
+**Current status:** image transfer is implemented in both directions over fex, with strict size/type validation; real-phone image verification remains pending. Non-image file clips are unsupported. This section documents the control half,
 reconstructed from static evidence (OBSERVED unless tagged). The *bytes* do not travel on service 9
 — they move over **fex** ([file-exchange.md](file-exchange.md#3-fex--fileex-service-2)). This
-project now has a fex client (it downloads the app icons, service 17), but it is not wired to
-clipboard clips yet.
+project uses fex for app icons (service 17) and clipboard images; arbitrary non-image file clips remain unsupported.
 
 A clip that holds files or an image uses the same `UPDATE_NOTIFY` (msgId 3), but `data` carries a
 file list instead of `text`:
