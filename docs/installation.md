@@ -20,13 +20,13 @@ systemd user service, which firewall ports to open, and how to set up the option
 
 This fork is modified from [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux), preserving its MIT license and credits. Download this fork's artifacts from [its own releases](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest), not upstream releases.
 
-Version **v0.2.0** ships an **x86_64 Arch Linux / EndeavourOS package**, a source archive and SHA-256 checksums. The native package depends on current Arch shared libraries; it is not a portable Ubuntu/Fedora binary.
+Version **v0.3.0** ships an **x86_64 Arch Linux / EndeavourOS package**, a source archive and SHA-256 checksums. The native package depends on current Arch shared libraries; it is not a portable Ubuntu/Fedora binary.
 
 ```sh
 # Download the package and SHA256SUMS into the same directory first.
 sha256sum --ignore-missing -c SHA256SUMS
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
 systemctl --user enable --now smartconnectd
@@ -35,11 +35,11 @@ smartconnect-gui
 
 Run the GUI as your desktop user. Choose **Pair new phone…** from the device menu and scan the QR in the phone's stock Smart Connect app. For scrcpy, separately authorize USB/network ADB. Full folded input requires Android 15+/scrcpy 4+; computer IME needs scrcpy 5+; independent audio needs Android 13+ and a capturable app.
 
-Other distributions should install the development dependencies below, check out tag `v0.2.0` from this fork and run `./packaging/install.sh --enable`. Install SDL3 development headers before building for computer IME support; newer GTK/GStreamer requirements may exceed old LTS repositories. See [the detailed Chinese guide](../INSTALL.zh-CN.md).
+Other distributions should install the development dependencies below, check out tag `v0.3.0` from this fork and run `./packaging/install.sh --enable`. Install SDL3 development headers before building for computer IME support; newer GTK/GStreamer requirements may exceed old LTS repositories. See [the detailed Chinese guide](../INSTALL.zh-CN.md).
 
 ## AppImage
 
-No AppImage from this fork is included in **v0.2.0**. The upstream AppImage does not include this fork's changes. The inherited build scripts remain available for development: `packaging/appimage/make-appimage.sh` needs Docker/Podman and builds a bundled x86_64 image. Its update feed now points to this fork. Building/portability of that image has not been validated for this release; use the native package or source installation above.
+No AppImage from this fork is included in **v0.3.0**. The upstream AppImage does not include this fork's changes. The inherited build scripts remain available for development: `packaging/appimage/make-appimage.sh` needs Docker/Podman and builds a bundled x86_64 image. Its update feed now points to this fork. Building/portability of that image has not been validated for this release; use the native package or source installation above.
 
 ## What you need
 
@@ -198,7 +198,7 @@ The repository is one Cargo workspace: the daemon is the root package, and `mirr
 ```sh
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.2.0
+git checkout v0.3.0
 ./packaging/install.sh            # add --enable to also start the daemon as a service
 ```
 

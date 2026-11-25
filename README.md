@@ -4,7 +4,7 @@
 
 这是一个以 vibe coding 方式持续改进的 Linux Smart Connect 分支：在上游功能基础上，增加 scrcpy 应用投屏与完整桌面模式、折叠手机输入兼容、自定义分辨率/码率/帧率、多语言、电脑/手机输入法，以及独立于手机媒体音量的电脑音频采集。
 
-**当前版本：v0.2.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
+**当前版本：v0.3.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
 
 The project is modified from the upstream repository linked above. It preserves the original license, credits and executable names. The scrcpy backend is optional and requires authorized ADB; the original Smart Connect backend does not require ADB.
 
@@ -19,6 +19,12 @@ options; the optional scrcpy backend additionally requires authorized ADB. Pair 
 - Cross Control: the PC's mouse and keyboard move onto the phone across a screen edge
 - the phone camera as a webcam
 - the phone's storage mounted as a folder, and a PC folder shared to the phone
+
+On Android 15+, scrcpy app and desktop capture use the native streaming display’s power group when supported, so capture can operate independently of the physical phone screen. The installed scrcpy server is loaded unchanged; a guarded Motorola physical double-tap wake bridge is included, with the latest per-display wake compensation still awaiting hardware confirmation. No Android SDK or Java installation is needed at runtime.
+
+Scrcpy desktop mode supplements top-edge hover through the native mouse channel on X11/XWayland, allowing the phone to reveal its auto-hidden app title bar. Fullscreen app behavior is preserved.
+
+The **Files** tab offers **ADB file transfer** for direct USB/network uploads and downloads, and **Storage and sharing** for phone mounts, quick folders, automatic mounting and PC-folder sharing.
 
 It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwaita app and a
 [Noctalia Shell](https://github.com/noctalia-dev/noctalia) plugin.
@@ -48,7 +54,7 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
 systemctl --user enable --now smartconnectd
@@ -68,7 +74,7 @@ sudo systemctl enable --now avahi-daemon bluetooth
 
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.2.0
+git checkout v0.3.0
 ./packaging/install.sh --enable           # build, install to ~/.local, start the user service
 
 # firewalld example; see docs/installation.md for ufw
@@ -125,6 +131,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Feature | Status | Notes |
 |---|---|---|
 | Phone notifications, quick reply, multi-line messages | ✅ | Through your desktop's notification daemon. Reply from a small window, the GTK app or the Noctalia panel. Chats show their recent messages, with sender names in groups. |
+| Click a GTK notification card to stream its app | 🟡 | Uses saved app-streaming settings and cancellable startup. Reply and menu controls remain independent. UI regression tested; notification-specific deep links are not implied. |
 | Notification action buttons and "Open" | 🟡 | Action buttons (e.g. "Mark as read") run on the phone through a short background app-streaming session, without a window. See [Notification actions](#notification-actions). |
 | Notification dedupe, coalescing and themed icons | 🟡 | |
 | Per-app notification mute | 🟡 | A mute toggle on each notification and a *Muted apps* list, in the GTK app and the Noctalia plugin. |
@@ -182,6 +189,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Feature | Status | Notes |
 |---|---|---|
 | Browse the phone's files (mount `/sdcard`) | ✅ | `smartconnect-files mount`: the phone's storage as a read-only FUSE folder, over the phone's own File Station protocol (NFSv3 on mutual TLS, no root or adb). Surviving a phone reconnect or daemon restart, and unmounting cleanly on Ctrl+C/SIGTERM, are tested against this project's own server, not yet through a real phone reconnect. |
+| ADB file transfer | 🟡 | **Files → ADB file transfer**: browse shared storage, upload multiple files, download selected files, toggle individual file checkboxes or clear the selection, cancel operations and protect existing files. Requires authorized USB/network ADB; folders are navigable but recursive folder transfer is not supported. |
 | Phone files in the GTK app | 🟡 | The *Files* page: **Mount**, **Open in Files**, **Unmount**, quick folders (Camera, Screenshots, Downloads, Documents), a mount folder setting (default `~/Phone`) and *Mount automatically when connected*. Wraps the verified helper. |
 | Phone files in the Noctalia panel | 🟡 | The *Phone files* tile: **Mount**, then **Open** and **Unmount**, with the mount folder in the plugin settings. Wraps the verified helper. |
 | Share a PC folder to the phone | ✅ | `smartconnect-files serve`, or *Share with the phone* on the GTK app's Files page: the phone browses a folder (default: your home folder, hidden files excluded) in Smart Connect's **Files tab** (All files, Recents, Images, Videos, …, with thumbnails) and Android's file browser. It can open and copy files, and delete them to your Trash (switchable off). Verified on a phone. Needs TCP 2049 open in your Wi-Fi's firewall zone; video thumbnails need `ffmpeg`. |
@@ -203,6 +211,8 @@ scrcpy app/desktop settings enable **Play phone audio** by default (Android 11+)
 scrcpy app/desktop settings also offer **Fold-compatible mouse** (on by default). On Android 15+/scrcpy 4+ it binds relative mouse input to the actual app/desktop display; press Left Alt or Super to release the mouse. Mouse speed can be set independently for apps and desktop (25–400%, default 100%). **Use phone input method** is on by default and selects a source-bound physical keyboard on supported versions, so phone IMEs can handle Chinese candidate selection. Super+K opens keyboard settings. Alternatively enable **Use computer input method** (scrcpy 5+): compose and select candidates on the PC, then send the confirmed Unicode text into the focused phone field. Changes apply after reopening the stream; older versions retain SDK input.
 
 App streaming and Desktop mode each offer **Wake and unlock with ADB before starting** (off by default), for both built-in and scrcpy rendering. Credential-protected locks still require phone authentication.
+
+App startup shows **Cancel** next to **Opening…** in the notification bar; it uses the same pending-start cancellation as the running list.
 
 While a phone display or ADB connection is being prepared, use **Cancel** to release the pending start. scrcpy captures also recover their virtual display power on supported folded phones without turning on the physical inner screen.
 
@@ -277,8 +287,9 @@ What each button on a phone notification does on the desktop:
 
 | Button | What happens | Status |
 |---|---|---|
-| **Reply**, or clicking a chat notification | Opens a reply box: a small Quickshell window, or the reply field in the GTK app or the Noctalia panel. The text goes to the phone as a direct reply. | ✅ |
+| **Reply**, or clicking a desktop/Noctalia chat notification | Opens a reply box: a small Quickshell window, or the reply field in the GTK app or the Noctalia panel. The text goes to the phone as a direct reply. | ✅ |
 | The app's own buttons, e.g. **Mark as read**, WhatsApp's **Mute**, a timer's **Pause** | Sent to the phone. Smart Connect runs these inside an app-streaming session, as it does for a Windows PC: the phone opens the app on a virtual display and fires the action once the app has focus. The stream host answers that session without a window and closes it about 2.5 s later. `SMARTCONNECT_BACKGROUND_ACTIONS=0` shows the window instead. | 🟡 |
+| Click a card in the GTK Notifications list | Opens the corresponding app using saved app-streaming settings, with Cancel during startup. | 🟡 |
 | **Open on phone** (apps without a reply action) | Opens the app in a streamed window on the PC. | 🟡 |
 | **Mute** (bell icon in the GTK app and the Noctalia panel) | Stops desktop popups from that app on this PC. The phone still notifies; unmute from *Muted apps*. | 🟡 |
 
@@ -393,3 +404,5 @@ future phone app update may break it.
 MIT. See [LICENSE](LICENSE).
 
 </details>
+
+The built-in viewer can receive offered Opus audio tracks. Current phones may negotiate a separate native audio session instead of including audio in the video offer; that separate session remains unfinished, so this does not promise built-in sound on those devices.

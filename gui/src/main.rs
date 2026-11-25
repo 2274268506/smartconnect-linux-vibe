@@ -18,6 +18,8 @@ mod crosscontrol;
 mod display;
 mod messages;
 mod files;
+mod adb_transfer;
+mod adb_files;
 mod icons;
 mod i18n;
 mod lastdevice;

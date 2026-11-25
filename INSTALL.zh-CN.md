@@ -2,7 +2,7 @@
 
 **本项目修改自 [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux)，保留原项目 MIT 许可证与版权声明。**
 
-版本：**v0.2.0**。发布页：[smartconnect-linux-vibe Releases](https://github.com/2274268506/smartconnect-linux-vibe/releases)。
+版本：**v0.3.0**。发布页：[smartconnect-linux-vibe Releases](https://github.com/2274268506/smartconnect-linux-vibe/releases)。
 
 ## Arch Linux / EndeavourOS 安装包
 
@@ -13,8 +13,8 @@
 ```sh
 mkdir -p smartconnect-vibe-install
 cd smartconnect-vibe-install
-curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.2.0/smartconnect-linux-vibe-0.2.0-1-x86_64.pkg.tar.zst
-curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.2.0/SHA256SUMS
+curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.3.0/smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
+curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.3.0/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
@@ -22,7 +22,7 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 ```sh
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
 # 可选功能：scrcpy 投屏、ADB、剪贴板同步
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
@@ -75,12 +75,12 @@ sudo pacman -S --needed git base-devel rust pkgconf avahi bluez wl-clipboard \
 ```sh
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.2.0
+git checkout v0.3.0
 ./packaging/install.sh --enable
 smartconnect-gui
 ```
 
-也可从 Release 下载 `smartconnect-linux-vibe-0.2.0-source.tar.gz`，解压后运行同一安装脚本。源码方式默认安装到 `~/.local`，无需使用 sudo 运行安装脚本。
+也可从 Release 下载 `smartconnect-linux-vibe-0.3.0-source.tar.gz`，解压后运行同一安装脚本。源码方式默认安装到 `~/.local`，无需使用 sudo 运行安装脚本。
 
 ## 更新、卸载与排查
 
@@ -88,4 +88,6 @@ smartconnect-gui
 - 安装包卸载：先运行 `systemctl --user disable --now smartconnectd`，再运行 `sudo pacman -R smartconnect-linux-vibe`。
 - 源码安装卸载：运行 `./packaging/uninstall.sh`，先用 `--help` 查看选项。个人配置和配对文件是否保留以脚本提示为准。
 - 状态与日志：`smartconnectd status`、`journalctl --user -u smartconnectd -n 100 --no-pager`；投屏日志也可从 GUI 设备菜单查看。
-- 本版限制：原生渲染在部分折叠设备强制旋转时可能比例异常，可使用 scrcpy；普通文件写入、跨设备拖放和彩信附件等尚未完整实现。USB 实线连接和真实短信发送未在当前设备验证。
+- 本版限制：原生渲染在部分折叠设备强制旋转时可能比例异常，可使用 scrcpy；原生文件挂载仍以只读浏览为主；新增 ADB 文件上传/下载，但暂不支持递归传输文件夹。跨设备拖放和彩信附件等尚未完整实现。USB 实线连接和真实短信发送未在当前设备验证。
+
+本版已验证 scrcpy 应用/桌面投屏在手机自动熄屏后继续工作。Motorola 双击亮屏补偿仍待实机确认；内置投屏仅能播放手机已协商的音轨，独立原生音频握手及双向音频尚未完成。

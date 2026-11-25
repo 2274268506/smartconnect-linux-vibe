@@ -8,6 +8,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
+- Extend scrcpy capture power isolation and guarded physical double-tap wake from desktop mode to app streams, recognizing their tagged virtual-display names.
+
+- Isolate Android 15+ scrcpy desktop capture from the physical screen’s power group, preserving the installed server and its cleanup behavior; bridge enabled physical Motorola double-tap gestures with proximity and lockscreen guards.
+
+- Supplement scrcpy desktop top-edge hover through native Smart Connect mouse input so maximized apps can reveal their hidden window controls on X11/XWayland.
+
+- Open app streaming by clicking a notification card, using saved app settings while retaining separate reply and menu actions.
+
+- Make ADB file selection reversible with individual checkboxes, Clear selection and Escape; keep Ctrl/Shift selection synchronized and use double-click to open folders.
+
+- Add an independent ADB file-transfer subpage: USB/network device selection, shared-storage browsing, batch file upload/download, cancellation and no-overwrite staging.
+
+- Move existing Files controls into the Storage and sharing subpage, with a file-tools landing page and Back navigation.
+
+- Preserve non-video SDP codec parameters during H.264 filtering and play offered Opus tracks in the built-in renderer; the phone still needs to negotiate an audio track.
+
+- Put app startup Cancel next to the Opening status toast, with pending-lifetime cleanup.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

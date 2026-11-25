@@ -31,6 +31,7 @@ impl Default for State {
 #[derive(Clone)]
 pub struct Spec {
     pub display_id: i64,
+    pub capture_isolation: bool,
     pub phone_address: Option<String>,
     pub options: ScrcpyOptions,
     pub quality: Quality,
@@ -683,7 +684,7 @@ fn run(
         programs,
         cancel,
     )?;
-    let sdk = if spec.options.fold_mouse || spec.options.phone_ime || (spec.options.audio && spec.options.independent_audio) {
+    let sdk = if spec.capture_isolation || spec.options.fold_mouse || spec.options.phone_ime || (spec.options.audio && spec.options.independent_audio) {
         capture(
             &programs.adb,
             &[
@@ -717,6 +718,15 @@ fn run(
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
+    // A normal AUTO_MIRROR capture joins the physical screen's power group. Isolate only
+    // native app/desktop sessions; retain upstream capture and the existing helper as fallback.
+    let _server = if programs.capture_power && spec.capture_isolation && sdk.is_some_and(|level|level>=35)
+        && std::env::var("SMARTCONNECT_SCRCPY_CAPTURE_ISOLATION").as_deref()!=Ok("0") {
+        match crate::capture_server::Artifact::prepare(&programs.scrcpy) {
+            Ok(artifact)=>Some(artifact),
+            Err(_)=>{crate::diagnostics::record("WARN", "scrcpy: independent stream capture unavailable; using standard server");None}
+        }
+    } else {None};
     let _capture_power = if programs.capture_power {
         match CapturePower::start(spec, programs, &serial, cancel) {
             Ok(helper) => Some(helper),
@@ -749,6 +759,7 @@ fn run(
         ))
         .stderr(Stdio::from(slave))
         .process_group(0);
+    if let Some(server)=&_server { command.env("SCRCPY_SERVER_PATH", &server.path); }
     configure_input(&mut command, &spec.options, uhid_mouse, uhid_keyboard);
     if programs.x11 {
         command.env("SDL_VIDEODRIVER", "x11");
@@ -838,6 +849,7 @@ mod tests {
     fn spec() -> Spec {
         Spec {
             display_id: 9,
+            capture_isolation: true,
             phone_address: None,
             options: Default::default(),
             quality: Quality {

@@ -321,3 +321,5 @@ a phone-side encoder pause is not used because display lifetime/content behavior
 **OBSERVED (implementation):** optional desktop ADB wake/unlock preparation completes before the service-1 resolution/start messages. It adds no proprietary phone field or polling command to the Smart Connect protocol. Protected locks and Smart Connect confirmation remain controlled by Android/the phone app.
 
 **OBSERVED (implementation):** scrcpy desktops use the same source-bound UHID mouse selection as app streams on Android 15+/scrcpy 4+. The capture-power and input fixes are independent; no physical-display interactive override or new Smart Connect wire command is used.
+
+**OBSERVED (implementation):** built-in reception now preserves non-video SDP and can decode offered Opus tracks. This does not change the observed video-only phone offer or add a native audio-service negotiation flow.

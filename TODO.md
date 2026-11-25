@@ -68,9 +68,7 @@ and [docs/](docs/) for details.
     the phone routes to it via its "Desktop" audio output. **Lowest-effort — build this first.**
   - **R4 Audio Stream = service 21** — bidirectional PC↔phone audio independent of a display session
     (Opus over WebRTC, or SRTP-over-superlink; `protocol:int` selects). Beans fully recovered
-    (`R4AudioData.PeerStart/SetParameters/WebRTC/StateChange/StartSuccessful`), but the numeric cmd
-    values are obfuscated — **needs one live capture (or Ghidra) to get the cmd numbers** before
-    building. This is the general two-way passthrough.
+    (`R4AudioData.PeerStart/SetParameters/WebRTC/StateChange/StartSuccessful`), numeric command dispatch has now been recovered from the current phone app (see `.notes/native-audio-protocol.md`), but routing prerequisites and the complete live WebRTC/transport handshake still require validation before implementation. This is the general two-way passthrough.
   - **Desktop/RDP audio (svc 6/7)** — noted, not reverse-engineered.
   - **Volume (both ways)** rides Android `MediaRouter` (not the audio beans): phone→PC →
     `IAudioEndpointVolume` (WASAPI) / on Linux a PipeWire sink volume; PC→phone → `AudioManager`

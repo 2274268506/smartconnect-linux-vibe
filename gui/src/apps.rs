@@ -50,6 +50,14 @@ pub struct App {
     pub work: bool,
 }
 
+/// Notifications can arrive before the launcher list; preserve known components/profile metadata.
+fn notification_app(apps: &[App], pkg: &str, name: &str) -> Option<App> {
+    if pkg.trim().is_empty() { return None; }
+    Some(apps.iter().find(|app| app.pkg == pkg).cloned().unwrap_or_else(|| App {
+        pkg: pkg.into(), name: if name.is_empty() { pkg.into() } else { name.into() }, ..App::default()
+    }))
+}
+
 impl App {
     /// What the icon resolver needs to know about this app.
     pub fn query(&self) -> icons::Query {
@@ -425,6 +433,10 @@ struct PendingApp {
     control: std::sync::Arc<StartControl>,
     requesting: bool,
     cancelling: bool,
+    opening_toast: Option<adw::Toast>,
+}
+impl Drop for PendingApp {
+    fn drop(&mut self) {if let Some(toast)=self.opening_toast.take(){toast.dismiss();}}
 }
 
 impl AppsPage {
@@ -446,11 +458,20 @@ impl AppsPage {
         self.running.set_visible(!sessions.sessions.is_empty() || !self.pending_rows.borrow().is_empty());
     }
 
+    fn show_opening_toast(self:&Rc<Self>,pkg:&str,name:&str) {
+        let toast=adw::Toast::new(&crate::tr_format!("Opening {}…", "正在打开 {}…", name));
+        toast.set_button_label(Some(tr("Cancel")));toast.set_timeout(0);
+        let weak=Rc::downgrade(self);let target=pkg.to_owned();
+        toast.connect_button_clicked(move |_|{if let Some(page)=weak.upgrade(){page.cancel_app(&target);}});
+        if let Some(start)=self.preparing.borrow_mut().get_mut(pkg) {start.opening_toast=Some(toast.clone());}
+        self.toasts.add_toast(toast);
+    }
+
     fn cancel_app(self:&Rc<Self>,pkg:&str) {
         self.request_generation.set(self.request_generation.get()+1);
         let control={
             let mut pending=self.preparing.borrow_mut();
-            let start=pending.entry(pkg.into()).or_insert_with(||PendingApp{control:Default::default(),requesting:false,cancelling:false});
+            let start=pending.entry(pkg.into()).or_insert_with(||PendingApp{control:Default::default(),requesting:false,cancelling:false,opening_toast:None});
             if start.cancelling {return;}
             start.cancelling=true;start.control.cancel();start.control.clone()
         };
@@ -607,6 +628,13 @@ impl AppsPage {
     }
 
     /// A phone app's name from the (cached) app list.
+    /// Same renderer, settings and cancellable startup as an app tile, anchored to the clicked card.
+    pub fn open_notification(self: &Rc<Self>, pkg: &str, name: &str, button: &gtk::Button) {
+        let app = notification_app(&self.state.borrow().apps, pkg, name);
+        if let Some(app) = app { self.launch(&app, button); }
+        else { self.toast(tr("This notification has no app identifier")); }
+    }
+
     pub fn app_name(&self, pkg: &str) -> Option<String> {
         self.state.borrow().apps.iter().find(|a| a.pkg == pkg).map(|a| a.name.clone())
     }
@@ -849,7 +877,6 @@ impl AppsPage {
         if self.preparing.borrow().contains_key(&app.pkg) {return;}
         self.remember_recent(&app.pkg);
         button.set_sensitive(false);
-        self.toast(&crate::tr_format!("Opening {}…", "正在打开 {}…", app.name));
         let (pkg, cmp, name) = (app.pkg.clone(), app.cmp.clone(), app.name.clone());
         let mut settings=prefs::load().apps.streaming.sanitized();
         if settings.layout.fixed && settings.layout.fit!=crate::stream_settings::FitAxis::Manual {
@@ -861,7 +888,8 @@ impl AppsPage {
         }
         self.request_generation.set(self.request_generation.get()+1);
         let control=std::sync::Arc::new(StartControl::default());
-        self.preparing.borrow_mut().insert(pkg.clone(),PendingApp{control:control.clone(),requesting:true,cancelling:false});
+        self.preparing.borrow_mut().insert(pkg.clone(),PendingApp{control:control.clone(),requesting:true,cancelling:false,opening_toast:None});
+        self.show_opening_toast(&pkg,&name);
         self.rebuild_pending();
         let weak = Rc::downgrade(self);
         let button = button.downgrade();
@@ -938,7 +966,7 @@ impl AppsPage {
             p.preparing.borrow_mut().retain(|pkg,start|start.requesting || start.cancelling || pending.contains(pkg) || list.iter().any(|s|s.pkg==*pkg&&s.renderer==crate::desktop_renderer::Renderer::Scrcpy&&s.scrcpy_state.as_deref()!=Some("running")));
             for pkg in &pending {
                 if !matches!(pkg.as_str(),"desktop"|"mirror"|"mobile") {
-                    p.preparing.borrow_mut().entry(pkg.clone()).or_insert_with(||PendingApp{control:Default::default(),requesting:false,cancelling:false});
+                    p.preparing.borrow_mut().entry(pkg.clone()).or_insert_with(||PendingApp{control:Default::default(),requesting:false,cancelling:false,opening_toast:None});
                 }
             }
             *p.host_pending.borrow_mut()=pending;
@@ -1032,6 +1060,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn notification_target_preserves_known_component_and_handles_missing_launcher_list() {
+        let app = App { pkg: "com.example.chat".into(), name: "Chat".into(), cmp: Some(".Main".into()), user_id: Some(10), work: true, ..App::default() };
+        assert_eq!(notification_app(&[app.clone()], &app.pkg, "Other name"), Some(app));
+        let fallback = notification_app(&[], "com.example.notes", "笔记").unwrap();
+        assert_eq!(fallback.name, "笔记"); assert!(fallback.cmp.is_none());
+        assert_eq!(notification_app(&[], "com.example.notes", "").unwrap().name, "com.example.notes");
+        assert!(notification_app(&[], "", "App").is_none());
+    }
+
+    #[test]
     fn cancelled_start_returns_without_starting_a_host_or_sending_a_request() {
         let control=StartControl::default();control.cancel();
         assert_eq!(launch("com.example.notes",None,Default::default(),&control),Ok(String::new()));
@@ -1046,9 +1084,12 @@ mod tests {
         assert!(!host_running());
         let (page,_widget)=AppsPage::build(&adw::ToastOverlay::new());
         let control=std::sync::Arc::new(StartControl::default());
-        page.preparing.borrow_mut().insert("com.example.notes".into(),PendingApp{control:control.clone(),requesting:false,cancelling:false});
+        page.preparing.borrow_mut().insert("com.example.notes".into(),PendingApp{control:control.clone(),requesting:false,cancelling:false,opening_toast:None});
+        page.show_opening_toast("com.example.notes","Notes");
+        let toast=page.preparing.borrow()["com.example.notes"].opening_toast.clone().unwrap();
+        assert_eq!(toast.button_label().as_deref(),Some(tr("Cancel")));
         page.rebuild_pending();assert_eq!(page.pending_rows.borrow().len(),1);assert!(page.running.is_visible());
-        page.cancel_app("com.example.notes");assert!(control.cancelled());
+        toast.emit_by_name::<()>("button-clicked",&[]);assert!(control.cancelled());
         let deadline=Instant::now()+Duration::from_secs(3);
         while !page.preparing.borrow().is_empty()&&Instant::now()<deadline {
             while glib::MainContext::default().pending(){glib::MainContext::default().iteration(false);}

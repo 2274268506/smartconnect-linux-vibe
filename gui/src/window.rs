@@ -233,6 +233,7 @@ struct NotifRow {
     menu: gtk::MenuButton,
     /// "Open on phone": forwards the notification click. Needs a live connection.
     open_item: gtk::Button,
+    open_stream: gtk::Button,
     /// Mutes/unmutes the app's desktop popups (hidden without a package name).
     mute_item: gtk::Button,
     data: Notification,
@@ -1643,6 +1644,7 @@ impl Ui {
             row.send.set_sensitive(connected);
             row.entry.set_sensitive(connected);
             row.open_item.set_sensitive(connected);
+            row.open_stream.set_sensitive(connected && !n.pkg.trim().is_empty());
             row.set_muted(muted);
         }
         // Re-insert in daemon order (newest first) only when the order actually changed.
@@ -1695,13 +1697,13 @@ impl Ui {
         let header_box = gtk::Box::builder().spacing(10).build();
         header_box.append(icon.widget());
         header_box.append(&name_col);
-        header_box.append(&menu);
+
 
         let body = gtk::Label::builder()
             .xalign(0.0)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
-            .selectable(true)
+            .selectable(false)
             .build();
         let entry = gtk::Entry::builder().hexpand(true).placeholder_text(tr("Reply…")).build();
         let send = gtk::Button::builder().icon_name("mail-send-symbolic").tooltip_text(tr("Send reply")).css_classes(["suggested-action"]).build();
@@ -1713,10 +1715,28 @@ impl Ui {
             .spacing(6)
             .css_classes(["sc-notif"])
             .build();
-        column.append(&header_box);
-        column.append(&body);
+        let summary = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+        summary.append(&header_box); summary.append(&body);
+        let open_stream = gtk::Button::builder().child(&summary).hexpand(true)
+            .css_classes(["flat"]).tooltip_text(tr("Open app stream")).build();
+        let top = gtk::Box::builder().spacing(6).build();
+        top.append(&open_stream); top.append(&menu);
+        column.append(&top);
         column.append(&reply_box);
         let row = gtk::ListBoxRow::builder().activatable(false).child(&column).build();
+
+        // Read current data by key: an updated notification may belong to a different package.
+        let key = n.key.clone(); let weak = Rc::downgrade(self);
+        open_stream.connect_clicked(move |button| {
+            let Some(ui) = weak.upgrade() else { return };
+            let data = ui.state.borrow().rows.get(&key).map(|r| r.data.clone());
+            if let Some(n) = data {
+                if !ui.state.borrow().status.as_ref().is_some_and(|s| s.connected) {
+                    ui.toast(tr("The phone is not connected")); return;
+                }
+                ui.apps.open_notification(&n.pkg, &n.app, button);
+            }
+        });
 
         // ── ⋯ menu handlers (read the current notification from state by key) ──
         let key = n.key.clone();
@@ -1785,7 +1805,7 @@ impl Ui {
         entry.connect_activate(move |_| f());
         send.connect_clicked(move |_| send_reply());
 
-        let mut r = NotifRow { row, icon, header, sub, body, reply_box, entry, send, menu, open_item, mute_item, data: Notification::default() };
+        let mut r = NotifRow { row, icon, header, sub, body, reply_box, entry, send, menu, open_item, open_stream, mute_item, data: Notification::default() };
         r.update(n, &self.apps.icon_query(&n.pkg, &n.app));
         r.set_muted(false);
         r
@@ -1980,6 +2000,7 @@ impl NotifRow {
         self.body.set_visible(!n.body.is_empty());
         self.reply_box.set_visible(n.replyable);
         self.mute_item.set_visible(!n.pkg.is_empty());
+        self.open_stream.set_sensitive(!n.pkg.trim().is_empty());
         self.data = n.clone();
     }
 
@@ -1996,6 +2017,36 @@ impl NotifRow {
 #[cfg(test)]
 mod language_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a desktop session and isolated XDG directories"]
+    fn notification_card_stream_target_preserves_reply_and_menu_controls() {
+        adw::init().unwrap();
+        let app = adw::Application::builder().application_id("dev.smartconnect.NotificationCardTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE).build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ui = Ui::new(&app);
+        let notification = Notification { key: "test-key".into(), pkg: "com.example.chat".into(),
+            app: "Chat".into(), title: "Example".into(), body: "Synthetic message".into(), replyable: true, ..Notification::default() };
+        ui.state.borrow_mut().status = Some(Status { connected:true, notifications:vec![notification.clone()], ..Status::default() });
+        ui.state.borrow_mut().muted_loading = true;
+        ui.refresh_notifications();
+        {
+            let state = ui.state.borrow(); let row = &state.rows["test-key"];
+            assert!(row.open_stream.is_sensitive());
+            assert!(row.header.is_ancestor(&row.open_stream)); assert!(row.body.is_ancestor(&row.open_stream));
+            assert!(!row.menu.is_ancestor(&row.open_stream)); assert!(!row.reply_box.is_ancestor(&row.open_stream));
+            row.entry.set_text("draft");
+        }
+        // The page's app launcher remains disconnected, so emitting a click cannot contact a host.
+        let button = ui.state.borrow().rows["test-key"].open_stream.clone(); button.emit_clicked();
+        ui.state.borrow_mut().status.as_mut().unwrap().notifications[0].pkg.clear();
+        ui.refresh_notifications();
+        assert!(!button.is_sensitive()); assert_eq!(ui.state.borrow().rows["test-key"].entry.text(), "draft");
+        ui.state.borrow_mut().status.as_mut().unwrap().notifications[0] = notification;
+        ui.state.borrow_mut().status.as_mut().unwrap().connected = false;
+        ui.refresh_notifications(); assert!(!button.is_sensitive());
+    }
 
     #[test]
     #[ignore = "requires a desktop session and an isolated XDG_CONFIG_HOME"]

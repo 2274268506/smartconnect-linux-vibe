@@ -104,3 +104,23 @@ published. The public protocol reference is [`docs/protocol/`](../docs/protocol/
 - [scrcpy-audio.md](scrcpy-audio.md) — remove forced no-audio, control app/desktop audio and optionally select playback capture for independent PC volume.
 
 - [vibe-release.md](vibe-release.md) — upstream attribution, v0.2.0 versions, public fork release, native Arch packaging and Chinese install guide.
+
+- [app-opening-cancel.md](app-opening-cancel.md) — cancellation action in the Opening toast and pending-start lifetime cleanup.
+
+- [builtin-audio-reception.md](builtin-audio-reception.md) — preserve audio SDP and receive offered Opus independently of the unresolved native audio control service.
+
+- [native-audio-protocol.md](native-audio-protocol.md) — statically recovered service-21 commands, routing prerequisites and remaining live-handshake gap.
+
+- [files-navigation.md](files-navigation.md) — file-tools landing page and persistent storage/share secondary page.
+
+- [adb-file-transfer.md](adb-file-transfer.md) — independent USB/network ADB file tool, shared-storage navigation, asynchronous staged transfers, checkbox/clear selection, cancellation and collision protection.
+
+- [notification-card-streaming.md](notification-card-streaming.md) — clickable notification summaries launch their corresponding app through the saved app-streaming workflow, keeping replies and menu actions independent.
+
+- [scrcpy-desktop-hover.md](scrcpy-desktop-hover.md) — native top-edge hover supplement for the owned scrcpy desktop window, preserving auto-hidden app captions and fullscreen behavior.
+
+- [scrcpy-desktop-power.md](scrcpy-desktop-power.md) — desktop-group capture isolation, session-private launcher around the unchanged installed scrcpy server, and physical sleep/wake validation.
+
+- [scrcpy-app-power.md](scrcpy-app-power.md) — reuse isolated capture and guarded physical double-tap wake for app sessions, with tagged-name/source validation.
+
+- [v0.3.0 release](release-0.3.0.md): version alignment, tested Arch packaging and documented streaming/audio limitations.

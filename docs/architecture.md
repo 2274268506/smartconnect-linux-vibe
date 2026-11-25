@@ -587,3 +587,27 @@ Computer-IME mode adds a small original SDL3 adapter to the scrcpy child using a
 Scrcpy audio is owned by the scrcpy child, separate from the compressed-video Smart Connect owner stream. `scrcpy.audio` now defaults to true and selects phone output instead of the previous unconditional `--no-audio`. The existing child process lifetime covers audio sockets/output cleanup. No service-15 SDP audio track, microphone capture, global mixer change or extra daemon media pipeline is added.
 
 The optional independent-audio switch selects Android app-playback capture rather than the volume-sensitive device-output path. A bounded existing SDK query gates playback capture on Android 13+. It remains scrcpy-owned and does not change Smart Connect SDP, globally set phone volume, add gain to a silent stream or create a volume-enforcement worker. App capture-policy exclusions still apply.
+
+Built-in incoming RTP pads are classified by media caps before video recovery counters. Offered Opus audio gets its own depayload/decode/convert/resample/output branch. H.264 SDP filtering is restricted to video media sections, preserving Opus RTP/fmtp attributes. This receive capability does not initiate the separate native audio service.
+
+The Files tab wraps its existing storage/share widget in a registered secondary NavigationPage. NavigationView retains that page while showing the file-tools home, so the existing FilesPage/ShareSection controllers and connection/shutdown lifecycle remain independent of navigation.
+
+
+### ADB file tool
+
+`gui/src/adb_files.rs` owns a separate Files navigation subpage and a bounded worker-event channel; `adb_transfer.rs` owns authorized-device discovery, NUL-delimited directory listings and staged transfers. Opening this tool or refreshing initiates discovery; startup does not scan ADB. Every file operation pins `adb -s` to the selected device, independently of the daemon's Smart Connect connection. GTK never waits for a subprocess. Cancellation kills/reaps the owned client process group, not the shared ADB server. Workers attempt staging cleanup on failure/cancellation; disconnects can prevent remote cleanup.
+
+Uploads reserve a unique remote staging directory, push a file, then publish with Android `mv -nT`. Downloads use a private local staging directory and Linux `renameat2(RENAME_NOREPLACE)`. Both reject collisions. Remote operations use shell-quoted paths and NUL-separated listings to support spaces, Chinese characters and newlines. This tool implements file-only transfers; it does not add native File Station write commands, media indexing or gallery thumbnails.
+
+GTK notification summaries are buttons wired to `AppsPage::open_notification`, which resolves the cached launcher entry or package fallback and reuses the normal saved-settings launch workflow. Current row data is looked up by notification key at activation. Reply inputs and the menu are outside this button; the original phone-intent command is unchanged.
+
+Scrcpy desktop sessions also use `desktop_hover.rs` from the host's existing window poll: actual X11 pointer ancestry selects the owned visible client, aspect-fit mapping rejects letterbox areas, and an edge-armed state machine supplements only caption-region motion through service 16 on the original desktop display. It stops when the pointer leaves the client or buttons are held. Clicks, typing and normal content motion remain in scrcpy. The supplement addresses original-display edge monitoring when SDK input targets a scrcpy capture clone; it does not modify phone tasks or fullscreen flags.
+
+
+### Desktop capture power isolation
+
+`capture_server.rs` wraps the installed scrcpy server asset with the original `android/capture` launcher. For Android 15+ native app and desktop sessions, an in-process display-service proxy replaces AUTO_MIRROR with an own-content trusted capture tied to the desktop power group. A retained WindowManager mirror/container supplies the original desktop pixels and cloned input windows on that capture's layer stack. This avoids the default capture's association with the physical screen's power group. The original server and cleanup helper run unchanged through isolated DEX classloaders; owned compositor layers and extracted assets are cleaned on release/exit. API failures restore the original flags and use standard capture. No daemon protocol, persistent phone configuration or physical display power override is added.
+
+The shared power launcher now covers native app sessions too. `capture_server::supports_package` selects desktop or valid Android application packages; whole-screen and virtual-phone view packages are excluded. Android source validation recognizes an optional hexadecimal session prefix before AppStream names, requires a virtual display and valid package/desktop token, and still matches each capture to the exact session source ID. The physical gesture bridge uses this same source-lifetime predicate.
+
+Physical double-tap compensation reads fresh state from the display service and addresses the sleeping physical display through the per-display power-service gesture wake API. It does not depend on aggregate interactivity or cached pre-sleep state. The stream/setting/proximity guards remain active; only static, rate-limited ignore reasons are logged.

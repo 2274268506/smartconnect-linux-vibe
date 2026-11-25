@@ -190,7 +190,7 @@ are absent there are still used on the wire.
 | 18 | Unknown | 1 / - | - | - |
 | 19 | Pairing helper: QR `wsData.serviceId`, and the source of tile-initiated requests | - / - | Used in the QR | [pairing-and-discovery.md](pairing-and-discovery.md) |
 | 20 | Unknown | 4 / 2 | - | - |
-| 21 | Unknown; Windows-side analysis labels it drag and drop (see 24) | 3 / 3 | - | - |
+| 21 | R4 native audio | 3 / 3 | Command dispatch recovered statically; Linux session not implemented/live verified | [Research note](../../.notes/native-audio-protocol.md) |
 | 22 | PC lock | 2 / 1 | Implemented | [pc-lock.md](pc-lock.md) |
 | 24 | Drag and drop (the phone's handler uses this id) | 2 / 3 | Not implemented; moves bytes over fex | [file-exchange.md](file-exchange.md#3-fex--fileex-service-2) |
 | 25 | Device status, feature-tile capabilities | 1 / - | Implemented, verified | [device-status-and-tiles.md](device-status-and-tiles.md) |

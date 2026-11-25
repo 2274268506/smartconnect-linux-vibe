@@ -262,6 +262,7 @@ which apps it forwards.
 
 - **Multi-line messages:** for chat notifications the body shows up to the last 4 messages. In group
   conversations each line is prefixed with the sender. Bodies are cut at 600 characters.
+- **Click a card in the GTK app:** opens the corresponding app stream using saved Apps settings. Reply fields and the ⋯ menu remain separate.
 - **Quick reply** (✅): if the app supports replies, the notification gets a **Reply** button (it is
   also the default click action). It opens a small reply window: type, press Enter to send, Esc to
   cancel. The GTK app's *Notifications* page and the Noctalia panel also show reply boxes under
@@ -272,7 +273,7 @@ which apps it forwards.
   running) answers that request **without opening a window** and closes the stream again a few
   seconds later, after the phone reports that the app is up. Set
   `SMARTCONNECT_BACKGROUND_ACTIONS=0` in the daemon's environment to get a window instead.
-- **Open on phone** (🟡): clicking a notification that can't be replied to — or *Open on phone* in the
+- **Open on phone** (🟡): clicking a desktop notification that can't be replied to — or *Open on phone* in the
   GTK app's **⋯** menu — opens that app in its own window on the PC through
   [app streaming](#app-streaming), as on Windows.
 - **Dedupe and coalescing** (🟡): identical re-posts are dropped, and a notification that keeps
@@ -1412,3 +1413,58 @@ Android 11+ is required. On Android 11, unlock before starting; older Android ve
 Under **Play phone audio**, enable **Independent of phone volume** and reopen the projection. It selects scrcpy's Android 13+ `playback` capture path so the PC can control playback loudness separately from the phone's output volume. App and desktop choices save independently; the option defaults off to preserve the existing output capture. It does not raise, lock or restore phone volume and does not add `--audio-dup`.
 
 Use the PC mixer to adjust the scrcpy playback stream. Some apps prohibit playback capture; if that app is silent, turn independent mode off and reopen to restore output capture. The startup check rejects enabled independent capture on Android below 13 or unknown SDK levels instead of silently changing the requested mode. The user verified ordinary media remains audible on the computer with phone media volume at zero on the current foldable. Other apps/devices still need verification; the capture-path choice alone is not proof for every app/device.
+
+## App opening status and cancellation
+
+The app **Opening…** toast includes **Cancel** beside the status. It stays available while startup is pending and dismisses when startup completes, fails or is cancelled.
+
+## Built-in audio reception
+
+The built-in viewer preserves audio SDP sections and decodes an offered Opus RTP track through the PC audio output. Headless actions and scrcpy owner streams drain it to avoid duplicate playback. This applies only when the phone actually includes audio in the offer; current video-only offers still require separate native audio negotiation, which is not implemented. It is not equivalent to the working scrcpy audio backend.
+
+## Files page navigation
+
+Open **Files → Storage and sharing** for all existing file features: phone storage mounting/unmounting, Open in Files, quick folders, mount location, automatic mounting, and sharing a PC folder with the phone. Use the header Back button to return to Files. The first level lists file tools and can accommodate future file-management entries. Navigating back does not unmount storage, stop sharing, recreate controllers or reset settings.
+
+
+## ADB file transfer
+
+Open **Files → ADB file transfer**. Install Android platform tools (`adb`), enable USB debugging or network debugging on the phone, and authorize this computer. Smart Connect pairing is not required for this tool.
+
+1. Connect USB and press **Refresh devices**, or enter the phone's already enabled network ADB address (`host:port`) and press **Connect**. For modern wireless debugging, first complete `adb pair <host>:<pairing-port>` in a terminal if required. This page does not bypass phone authorization.
+2. Select the authorized device. A single device is selected automatically; with multiple devices, choose explicitly. Offline/unauthorized devices are excluded.
+3. Browse from `/sdcard`. Double-click folders, use **Up**, or enter a shared-storage folder such as `/sdcard/Download` and press **Open folder**. Hidden entries are included; symbolic links are excluded. Android may deny access to protected subfolders.
+4. **Upload files…** selects one or more local files and sends them into the displayed phone folder. Select phone files using their checkboxes (click again to deselect; Ctrl/Shift selection also works). **Clear selection** clears all files, and Escape clears selection while the file list has focus. Then press **Download selected…** and choose a local destination folder. Folder selection is for navigation, not recursive transfer.
+5. During a transfer, an activity indicator and completed-file count are shown; these do not estimate byte percentage or speed. **Cancel** stops the active ADB client and attempts to remove its partial staging file. Already completed files remain intact. The batch stops on the first failure or existing destination; it never overwrites existing files.
+
+Transfers run in the background while navigating between pages. Device/path changes are disabled during operations. **Quit** requests cancellation without waiting on GTK. If the phone disconnects or the process is forcibly terminated, a hidden `.smartconnect-upload-*.part.d` staging folder may remain at the destination; it is not a completed upload. No file contents, paths or device identifiers are written to application logs. `SMARTCONNECT_ADB_BIN` can override the ADB executable.
+
+
+## Open an app from a notification
+
+In the GTK **Notifications** list, click the notification's icon, heading or message to open that app in a streaming window. Enter/Space also activates the focused card button. It uses the same saved renderer (built-in or scrcpy), geometry, bitrate/frame rate, keyboard and audio settings as the Apps page. The existing Opening toast includes Cancel, and repeated clicks while the same app is preparing do not start another request.
+
+This opens the corresponding application; it does not guarantee navigation to the notification's exact conversation or screen. Use **⋯ → Open on phone** for the notification's original intent. Reply fields, Send and the ⋯ menu operate independently of the clickable card. A live Smart Connect connection and an app package identifier are required. Applications can be opened before the launcher list is loaded; cached launcher component metadata is used when available. This change applies to the in-app list; desktop popup actions retain their existing behavior and Do Not Disturb remains unchanged.
+
+
+## Reveal desktop app controls in scrcpy
+
+When a phone app is maximized in mobile desktop mode, move the mouse to the **top edge of the video content** and pause briefly. The phone reveals its auto-hidden title bar; use its restore button to return to a smaller window. This is separate from the PC scrcpy window's fullscreen/borderless setting.
+
+On X11/XWayland, the stream host supplements scrcpy desktop hover using the same native Smart Connect mouse channel as the built-in renderer. It follows only the session-owned scrcpy window actually under the pointer, maps scaling/letterboxing into phone pixels, and forwards movement in the top caption region after visiting its edge. One move leaving that region lets the phone hide the controls again. It does not change app windowing modes, force apps into floating windows, inject clicks or alter global phone settings. This supplement is unavailable without X11 access; the default integration selects SDL's X11 driver when available. Restart an existing desktop session after updating the stream host.
+
+Verified on a phone with the updated host: hovering at the video top edge reveals the maximized app caption, and clicking its Restore button returns the app to a smaller window.
+
+
+## Scrcpy app/desktop streams and phone sleep
+
+On Android 15+, Smart Connect uses a scoped capture launcher to keep app/desktop capture in the native streaming display's power group, rather than the physical phone screen's group. This addresses desktop blackout when the physical screen automatically sleeps while preserving the phone's normal wake gesture and lockscreen policy. It changes neither the phone's timeout nor its double-tap setting; authentication remains on the phone when required.
+
+The launcher packages the **installed, unchanged scrcpy server** into a private temporary archive and preserves upstream cleanup. The application finds the server from `SCRCPY_SERVER_PATH`, alongside the scrcpy executable, or in the installation's `share/scrcpy/scrcpy-server` directory. Unsupported APIs or unavailable assets fall back to standard capture and write a static mirroring diagnostic. A line containing `independent stream power ready` confirms the isolated capture was created. Existing desktop sessions must be restarted after updating the stream host.
+
+For comparison/debugging only, start the stream host with `SMARTCONNECT_SCRCPY_CAPTURE_ISOLATION=0` to use the standard server path. No SDK/Java runtime or patched system scrcpy installation is required. This applies to app and desktop streams; whole-screen and virtual-phone view modes keep their existing power behavior. An intentionally locked or stopped phone desktop may still require interaction on the device.
+
+
+On supported Motorola phones, the isolated app/desktop launcher also listens for the phone's own double-tap hardware gesture while an app or desktop capture is active. It requests wake only for the corresponding sleeping physical display, with the existing double-tap setting enabled and a known-clear proximity sensor. It leaves normal Android gesture handling registered, does not change settings, and does not unlock the device. If sensor APIs or the expected sensor types are unavailable, the normal phone behavior remains in effect. Restart the app/desktop stream after updating the launcher.
+
+App streaming uses the same power-isolation and physical wake scheme as desktop mode. It retains the app’s renderer, resolution, bitrate/frame rate and audio/input settings. Tagged native app-display names are recognized, while physical screens and whole-screen/virtual-phone views are excluded. The existing Cancel startup path is unchanged.

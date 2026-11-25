@@ -56,6 +56,8 @@ mod playback;
 mod stream_timing;
 mod quality;
 mod scrcpy;
+mod capture_server;
+mod desktop_hover;
 mod resize;
 mod rotation;
 mod receive_buffer;
@@ -235,6 +237,9 @@ struct Session {
     flip: Mutex<Option<gst::Element>>,
     /// The video window's X11 id once known, and the title last written to it.
     xwin: Mutex<Option<(u32, String, bool)>>,
+    desktop_hover: Mutex<desktop_hover::Hover>,
+    desktop_hover_poll: Mutex<Instant>,
+    desktop_hover_window: Mutex<Option<(u32, u32)>>,
     borderless: AtomicBool,
     window_closed: Arc<AtomicBool>,
     watched_window: Mutex<Option<gst_gl::GLWindow>>,
@@ -298,6 +303,9 @@ impl Session {
             sink: Mutex::new(None),
             flip: Mutex::new(None),
             xwin: Mutex::new(None),
+            desktop_hover: Mutex::new(desktop_hover::Hover::default()),
+            desktop_hover_poll: Mutex::new(Instant::now()),
+            desktop_hover_window: Mutex::new(None),
             borderless: AtomicBool::new(false),
             window_closed: Arc::new(AtomicBool::new(false)),
             watched_window: Mutex::new(None),
@@ -357,6 +365,17 @@ impl Session {
     }
 
     fn attach_decoder(self: &Arc<Self>, pad: &gst::Pad) -> Result<()> {
+        let caps=pad.current_caps().unwrap_or_else(||pad.query_caps(None));
+        let audio=caps.structure(0).is_some_and(|c|c.get::<&str>("media").ok()==Some("audio"));
+        if audio {
+            let opus=caps.structure(0).and_then(|c|c.get::<&str>("encoding-name").ok()).is_some_and(|e|e.eq_ignore_ascii_case("OPUS"));
+            let play=opus && !self.headless && self.renderer!=desktop_renderer::Renderer::Scrcpy;
+            let desc=if play {"queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! autoaudiosink sync=false"} else {"queue ! fakesink sync=false async=false"};
+            let bin=gst::parse::bin_from_description(desc,true)?;
+            self.pipeline.add(&bin)?;pad.link(&bin.static_pad("sink").context("no audio input pad")?)?;bin.sync_state_with_parent()?;
+            println!("[{}] offered audio track: playback={play}",self.sid);
+            return Ok(());
+        }
         if !self.headless {
         let progress = self.progress.clone();
         pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
@@ -756,7 +775,7 @@ impl Session {
         let mut link=self.external.lock().unwrap();
         if link.is_none() {
             if let Some(display_id)=self.display_id().filter(|_|self.st.lock().unwrap().answered) {
-                *link=Some(scrcpy::Link::start(scrcpy::Spec{display_id,phone_address:self.phone_address.clone(),
+                *link=Some(scrcpy::Link::start(scrcpy::Spec{display_id,capture_isolation:capture_server::supports_package(&self.pkg),phone_address:self.phone_address.clone(),
                     options:self.scrcpy_options.clone(),quality:self.quality,borderless:self.borderless.load(Ordering::Relaxed),session_id:self.sid,
                     fullscreen:self.fullscreen,
                     window_size:if self.layout.fixed&&self.layout.fit!=stream_settings::FitAxis::Manual{self.stream_size()}else{None},
@@ -886,6 +905,24 @@ impl X11 {
         clients.value32()?.find(|win|self.conn.get_property(false,*win,self.net_pid,AtomEnum::CARDINAL,0,1).ok().and_then(|c|c.reply().ok()).and_then(|r|r.value32().and_then(|mut v|v.next()))==Some(pid))
     }
 
+    /// Follow the actual pointer window chain, so covered windows never inject hover.
+    fn pointer_in_window(&self, win: u32) -> Option<(i32, i32)> {
+        use x11rb::protocol::xproto::ConnectionExt as _;
+        let mut current = self.root;
+        for _ in 0..16 {
+            let pointer = self.conn.query_pointer(current).ok()?.reply().ok()?;
+            if !pointer.same_screen { return None; }
+            if current == win {
+                // Do not supplement hover while dragging/clicking with scrcpy.
+                if u16::from(pointer.mask) & 0x1f00 != 0 { return None; }
+                return Some((i32::from(pointer.win_x), i32::from(pointer.win_y)));
+            }
+            if pointer.child == 0 { return None; }
+            current = pointer.child;
+        }
+        None
+    }
+
     fn app_layout(&self, win:u32, size:(u32,u32), layout:stream_settings::Layout) {
         use x11rb::connection::Connection as _;
         use x11rb::protocol::xproto::{ConnectionExt as _,ConfigureWindowAux};
@@ -964,6 +1001,26 @@ impl Session {
             x.resize_window(win, (h, w));
         }
         self.st.lock().unwrap().window_turned = Some(want);
+    }
+
+    /// Phone edge monitors must see hover on the original desktop, not scrcpy's clone display.
+    fn sync_desktop_hover(&self, x: &X11) {
+        if self.headless || self.pkg != "desktop" || self.renderer != desktop_renderer::Renderer::Scrcpy { return; }
+        let now = Instant::now();
+        { let mut last = self.desktop_hover_poll.lock().unwrap();
+          if now.duration_since(*last) < Duration::from_millis(50) { return; } *last = now; }
+        let Some(display) = self.display_id() else { return; };
+        let Some(size) = self.stream_size() else { return; };
+        let point = self.external_state().filter(|s| s.phase == "running").and_then(|s| s.pid)
+            .and_then(|pid| {
+                let mut cached = self.desktop_hover_window.lock().unwrap();
+                if let Some((owner, win)) = *cached { if owner == pid { return Some(win); } }
+                let win = x.window_for_pid(pid)?; *cached = Some((pid, win)); Some(win)
+            })
+            .and_then(|win| desktop_hover::video_point(x.pointer_in_window(win)?, x.window_size(win)?, size));
+        if let Some((px, py)) = self.desktop_hover.lock().unwrap().observe(point, size.1) {
+            self.d.input(4, json!({"displayId":display,"x":px,"y":py}));
+        }
     }
 
     /// Applies the current title to the X11 window (finds the window the first time).
@@ -1732,6 +1789,7 @@ impl Host {
         if let Some(x) = &self.x11 {
             for s in self.sessions.values() {
                 s.sync_x11_title(x);
+                s.sync_desktop_hover(x);
                 s.sync_window_shape(x);
             }
             if self.resize && now.duration_since(self.last_resize_poll) >= RESIZE_POLL {
@@ -1858,12 +1916,16 @@ fn h264_only(sdp: &str) -> String {
             .map(str::to_owned)
     };
     let mut out = Vec::new();
+    let mut video=false;
     for l in lines {
+        if l.starts_with("m=") {video=l.starts_with("m=video ");}
+        if !video {out.push(l.to_owned());continue;}
         if l.starts_with("a=extmap:") && l.contains("urn:3gpp:video-orientation") {
             continue; // make the phone rotate frames itself instead of tagging them
         }
         if l.starts_with("m=video") {
             let parts: Vec<&str> = l.split(' ').collect();
+            if parts.len()<3 {out.push(l.to_owned());continue;}
             let keep: Vec<&str> = parts[3..].iter().copied().filter(|pt| h264.iter().any(|h| h == pt)).collect();
             out.push(format!("{} {}", parts[..3].join(" "), keep.join(" ")));
         } else if let Some(pt) = pt_of(l) {
@@ -2233,6 +2295,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn h264_selection_preserves_audio_codec_and_parameters() {
+        let sdp="v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97\r\na=rtpmap:96 H264/90000\r\na=rtpmap:97 VP8/90000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n";
+        let filtered=h264_only(sdp);
+        assert!(!filtered.contains("VP8"));
+        assert!(filtered.contains("a=rtpmap:111 opus/48000/2"));
+        assert!(filtered.contains("a=fmtp:111 minptime=10;useinbandfec=1"));
+    }
+
+    #[test]
     fn h264_only_keeps_h264_and_drops_orientation() {
         let offer = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 98 102\r\na=mid:0\r\n\
                      a=extmap:3 urn:3gpp:video-orientation\r\n\
@@ -2300,6 +2371,25 @@ mod tests {
 
     fn invite(pkg: &str) -> Value {
         json!({ "ver": "1", "cmd": 2, "data": { "deviceId": "<phone-id>", "pkg": pkg, "pkgName": "Example", "source": 1, "userId": 0, "cmp": null } })
+    }
+
+    #[test]
+    #[ignore="requires an isolated X11 server"]
+    fn desktop_hover_uses_only_the_uncovered_owned_client() {
+        use x11rb::{connection::Connection as _, protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass}};
+        let x = X11::connect().unwrap();
+        let window = x.conn.generate_id().unwrap();
+        x.conn.create_window(x11rb::COPY_DEPTH_FROM_PARENT, window, x.root, 0, 0, 300, 200, 0,
+            WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap();
+        x.conn.map_window(window).unwrap();
+        x.conn.warp_pointer(0u32, window, 0, 0, 0, 0, 80, 2).unwrap();x.conn.flush().unwrap();
+        assert_eq!(x.pointer_in_window(window), Some((80, 2)));
+        let overlay = x.conn.generate_id().unwrap();
+        x.conn.create_window(x11rb::COPY_DEPTH_FROM_PARENT, overlay, x.root, 0, 0, 300, 200, 0,
+            WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap();
+        x.conn.map_window(overlay).unwrap();x.conn.flush().unwrap();
+        assert_eq!(x.pointer_in_window(window), None);
+        x.conn.destroy_window(overlay).unwrap();x.conn.destroy_window(window).unwrap();x.conn.flush().unwrap();
     }
 
     #[test]

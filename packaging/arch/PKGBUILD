@@ -6,9 +6,9 @@
 # Set CARGO_TARGET_DIR to reuse an existing build directory.
 
 pkgname=smartconnect-linux-vibe
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
-pkgdesc='Smart Connect Linux Vibe: scrcpy desktop/app streaming, input methods and independent audio'
+pkgdesc='Smart Connect Linux Vibe: ADB file transfers, scrcpy streaming and independent audio'
 url='https://github.com/2274268506/smartconnect-linux-vibe'
 provides=('smartconnect-linux')
 conflicts=('smartconnect-linux' 'smartconnect-linux-git')
@@ -19,7 +19,7 @@ depends=('avahi' 'dbus' 'glib2' 'glibc' 'gst-plugins-bad' 'gst-plugins-bad-libs'
          'libadwaita>=1.7' 'libgcc' 'libnice' 'pango')
 makedepends=('cargo' 'pkgconf' 'sdl3')
 optdepends=('scrcpy: optional app/desktop renderer; version 5+ for computer IME'
-            'android-tools: authorized ADB connection for scrcpy and optional wake/unlock'
+            'android-tools: ADB file transfers, scrcpy and optional wake/unlock'
             'gst-plugin-va: hardware H.264 decoding and encoding (video needs this or gst-libav)'
             'gst-libav: software H.264 decoding'
             'gst-plugins-ugly: software H.264 encoding for the phone as a display'
