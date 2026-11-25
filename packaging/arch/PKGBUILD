@@ -6,9 +6,9 @@
 # Set CARGO_TARGET_DIR to reuse an existing build directory.
 
 pkgname=smartconnect-linux-vibe
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
-pkgdesc='Smart Connect Linux Vibe: ADB file transfers, scrcpy streaming and independent audio'
+pkgdesc='Smart Connect Linux Vibe: Gallery, ADB files, SMS and scrcpy streaming'
 url='https://github.com/2274268506/smartconnect-linux-vibe'
 provides=('smartconnect-linux')
 conflicts=('smartconnect-linux' 'smartconnect-linux-git')

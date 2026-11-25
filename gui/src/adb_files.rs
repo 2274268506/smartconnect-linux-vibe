@@ -15,15 +15,42 @@ use std::{
     },
 };
 
+/// Use only the currently connected, paired Smart Connect peer; never scan LAN addresses.
+fn paired_endpoint(status: &serde_json::Value, port: u16) -> Option<String> {
+    if status["connected"] != true || status["paired"] != true || port == 0 {return None;}
+    let ip: std::net::IpAddr = status["phoneAddress"].as_str()?.parse().ok()?;
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {return None;}
+    Some(std::net::SocketAddr::new(ip, port).to_string())
+}
+
+/// Shared by file tools and the gallery; always called on a worker.
+pub(crate) fn discover_devices(port: u16, cancel: &Cancel) -> adb::Result<(Vec<String>, Option<String>)> {
+    let mut endpoint = crate::daemon::command("status").ok().and_then(|reply| paired_endpoint(&reply.raw, port));
+    let mut ids = adb::devices(cancel)?;
+    if let Some(address) = endpoint.clone() {
+        let target = address.parse::<std::net::SocketAddr>().ok();
+        if let Some(existing) = ids.iter().find(|id| id.parse::<std::net::SocketAddr>().ok()
+                .zip(target).is_some_and(|(a,b)| a.ip() == b.ip())) {
+            endpoint = Some(existing.clone());
+        } else {
+            if let Err(error) = adb::connect(&address, cancel) {
+                if adb::cancelled(cancel) {return Err(error);}
+            }
+            ids = adb::devices(cancel)?;
+        }
+    }
+    Ok((ids, endpoint))
+}
+
 enum Job {
-    Devices,
+    Devices(u16),
     Connect(String),
     List(String, String),
     Upload(String, String, Vec<PathBuf>),
     Download(String, Vec<String>, PathBuf),
 }
 enum Event {
-    Devices(Vec<String>),
+    Devices(Vec<String>, Option<String>),
     Listing(String, Vec<Entry>),
     Progress(usize, usize),
     Done(Result<(), String>),
@@ -52,6 +79,9 @@ pub struct AdbFilesPage {
     cancel: RefCell<Option<Cancel>>,
     busy: Cell<bool>,
     syncing: Cell<bool>,
+    automatic_address: RefCell<Option<String>>,
+    last_peer: RefCell<Option<String>>,
+    pending_refresh: Cell<bool>,
 }
 impl AdbFilesPage {
     pub fn build() -> Rc<Self> {
@@ -142,6 +172,9 @@ impl AdbFilesPage {
             cancel: RefCell::new(None),
             busy: Cell::new(false),
             syncing: Cell::new(false),
+            automatic_address: RefCell::new(None),
+            last_peer: RefCell::new(None),
+            pending_refresh: Cell::new(false),
         });
         let w = Rc::downgrade(&page);
         page.refresh.connect_clicked(move |_| {
@@ -345,9 +378,19 @@ impl AdbFilesPage {
             .map(|e| e.path.clone())
             .collect()
     }
+    pub fn peer_changed(self: &Rc<Self>, status: &crate::daemon::Status) {
+        let peer = if status.connected && status.paired {status.phone_address.clone()} else {None};
+        if *self.last_peer.borrow() == peer {return;}
+        *self.last_peer.borrow_mut() = peer.clone();
+        if peer.is_some() && self.widget.is_mapped() {
+            if self.busy.get() {self.pending_refresh.set(true);}
+            else {self.refresh_devices();}
+        }
+    }
     pub fn refresh_devices(self: &Rc<Self>) {
         if !self.busy.get() {
-            self.start(Job::Devices)
+            let port = self.address.text().parse::<std::net::SocketAddr>().ok().map(|a| a.port()).unwrap_or(5555);
+            self.start(Job::Devices(port))
         }
     }
     fn browse_path(self: &Rc<Self>, path: String) {
@@ -365,7 +408,7 @@ impl AdbFilesPage {
             return;
         }
         let transfer = matches!(job, Job::Upload(..) | Job::Download(..));
-        let scan = matches!(job, Job::Devices | Job::Connect(..));
+        let scan = matches!(job, Job::Devices(..) | Job::Connect(..));
         let cancel = Arc::new(AtomicBool::new(false));
         *self.cancel.borrow_mut() = Some(cancel.clone());
         self.status.set_text(&tr("Working…"));
@@ -376,14 +419,14 @@ impl AdbFilesPage {
         std::thread::spawn(move || {
             let result = (|| -> adb::Result<()> {
                 match job {
-                    Job::Devices => {
-                        let ids = adb::devices(&cancel)?;
-                        let _ = tx.send_blocking(Event::Devices(ids));
+                    Job::Devices(port) => {
+                        let (ids, endpoint) = discover_devices(port, &cancel)?;
+                        let _ = tx.send_blocking(Event::Devices(ids, endpoint));
                     }
                     Job::Connect(address) => {
                         adb::connect(&address, &cancel)?;
                         let ids = adb::devices(&cancel)?;
-                        let _ = tx.send_blocking(Event::Devices(ids));
+                        let _ = tx.send_blocking(Event::Devices(ids, None));
                     }
                     Job::List(device, path) => {
                         let path = adb::remote_path(&path)?;
@@ -432,16 +475,24 @@ impl AdbFilesPage {
             while let Ok(event) = rx.recv().await {
                 let Some(p) = w.upgrade() else { break };
                 match event {
-                    Event::Devices(ids) => {
+                    Event::Devices(ids, endpoint) => {
                         let previous = p.device();
+                        let old_auto = p.automatic_address.borrow().clone();
+                        if let Some(address) = &endpoint {
+                            if p.address.text().is_empty() || p.automatic_address.borrow().as_deref() == Some(p.address.text().as_str()) {
+                                p.address.set_text(address);
+                                *p.automatic_address.borrow_mut() = Some(address.clone());
+                            }
+                        }
                         p.syncing.set(true);
                         p.model.splice(
                             0,
                             p.model.n_items(),
                             &ids.iter().map(String::as_str).collect::<Vec<_>>(),
                         );
-                        let selected = previous
-                            .and_then(|id| ids.iter().position(|v| v == &id))
+                        let preferred = if previous == old_auto && old_auto != endpoint {endpoint.as_ref()} else {previous.as_ref()};
+                        let selected = preferred.and_then(|id| ids.iter().position(|v| v == id))
+                            .or_else(|| endpoint.as_ref().and_then(|id| ids.iter().position(|v| v == id)))
                             .or_else(|| (ids.len() == 1).then_some(0));
                         p.devices.set_selected(
                             selected
@@ -463,6 +514,10 @@ impl AdbFilesPage {
                         p.busy.set(false);
                         p.cancel.borrow_mut().take();
                         p.controls();
+                        if p.pending_refresh.replace(false) {
+                            p.refresh_devices();
+                            break;
+                        }
                         match result {
                             Ok(()) => {
                                 p.status.set_text(&tr(if scan&&p.model.n_items()==0{"No authorized ADB device. Unlock the phone and accept the debugging prompt, then refresh."}else if scan&&p.device().is_none(){"Select an ADB device."}else{"Completed"}));
@@ -557,6 +612,23 @@ impl Drop for AdbFilesPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paired_network_endpoint_tracks_current_session_and_supports_ipv6() {
+        use serde_json::json;
+        let mut status=json!({"paired":true,"connected":true,"phoneAddress":"192.168.1.20"});
+        assert_eq!(paired_endpoint(&status,5555).as_deref(),Some("192.168.1.20:5555"));
+        status["phoneAddress"]=json!("192.168.1.30");
+        assert_eq!(paired_endpoint(&status,4444).as_deref(),Some("192.168.1.30:4444"));
+        status["phoneAddress"]=json!("2001:db8::1");
+        assert_eq!(paired_endpoint(&status,5555).as_deref(),Some("[2001:db8::1]:5555"));
+        for invalid in ["127.0.0.1","0.0.0.0","224.0.0.1","not-an-ip"] {
+            status["phoneAddress"]=json!(invalid);assert!(paired_endpoint(&status,5555).is_none());
+        }
+        status["phoneAddress"]=json!("192.168.1.20");
+        status["connected"]=json!(false);assert!(paired_endpoint(&status,5555).is_none());
+        status["connected"]=json!(true);status["paired"]=json!(false);assert!(paired_endpoint(&status,5555).is_none());
+    }
+
     #[test]
     #[ignore = "requires a desktop session"]
     fn idle_page_and_cancellation_controls() {

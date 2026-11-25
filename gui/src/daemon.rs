@@ -29,6 +29,7 @@ pub fn socket_path() -> PathBuf {
 pub struct Status {
     pub connected: bool,
     pub paired: bool,
+    pub phone_address: Option<String>,
     pub name: Option<String>,
     pub model: Option<String>,
     pub battery: Option<i64>,

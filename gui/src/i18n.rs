@@ -65,20 +65,15 @@ impl Language {
         self.resolve(get) == Self::Chinese
     }
 }
-static LANGUAGE: AtomicU32 = AtomicU32::new(2);
 static RESOLVED: AtomicU32 = AtomicU32::new(2);
 static ZH: OnceLock<HashMap<String, String>> = OnceLock::new();
 static FR: OnceLock<HashMap<String, String>> = OnceLock::new();
 static ES: OnceLock<HashMap<String, String>> = OnceLock::new();
 pub fn initialize(language: Language) {
-    LANGUAGE.store(language.index(), Ordering::Relaxed);
     RESOLVED.store(
         language.resolve(|k| std::env::var(k).ok()).index(),
         Ordering::Relaxed,
     );
-}
-pub fn current_language() -> Language {
-    Language::from_index(LANGUAGE.load(Ordering::Relaxed))
 }
 fn resolved() -> Language {
     Language::from_index(RESOLVED.load(Ordering::Relaxed))

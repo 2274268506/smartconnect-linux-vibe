@@ -250,6 +250,7 @@ pub struct FilesPage {
     /// The "Share with the phone" section (PC→phone, `smartconnect-files serve`).
     share: Rc<ShareSection>,
     adb: Rc<crate::adb_files::AdbFilesPage>,
+    gallery: Rc<crate::gallery::GalleryPage>,
     st: RefCell<State>,
     /// A poll timer is running: don't start a second one.
     watching: Cell<bool>,
@@ -266,7 +267,7 @@ fn card_box() -> gtk::Box {
 }
 
 /// Keep the existing storage/share controller alive while navigating to and from its page.
-fn files_navigation(content: &impl IsA<gtk::Widget>) -> (adw::NavigationView, Rc<crate::adb_files::AdbFilesPage>) {
+fn files_navigation(content: &impl IsA<gtk::Widget>) -> (adw::NavigationView, Rc<crate::adb_files::AdbFilesPage>, Rc<crate::gallery::GalleryPage>) {
     let navigation=adw::NavigationView::new();
     let entry=adw::ActionRow::builder().title(tr("Storage and sharing"))
         .subtitle(tr("Browse phone storage, mount folders, and share PC files"))
@@ -281,6 +282,11 @@ fn files_navigation(content: &impl IsA<gtk::Widget>) -> (adw::NavigationView, Rc
         .subtitle(tr("Upload and download files over USB or network ADB")).activatable(true).build();
     adb_entry.add_prefix(&gtk::Image::from_icon_name("folder-download-symbolic"));
     adb_entry.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));tools.add(&adb_entry);
+    let gallery=crate::gallery::GalleryPage::build();
+    let gallery_entry=adw::ActionRow::builder().title(tr("Gallery"))
+        .subtitle(tr("Browse photo folders, preview images, and download originals")).activatable(true).build();
+    gallery_entry.add_prefix(&gtk::Image::from_icon_name("image-x-generic-symbolic"));
+    gallery_entry.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));tools.add(&gallery_entry);
     column.append(&tools);
     let clamp=adw::Clamp::builder().maximum_size(1400).tightening_threshold(1400).child(&column).build();
     let home=gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&clamp).build();
@@ -293,7 +299,10 @@ fn files_navigation(content: &impl IsA<gtk::Widget>) -> (adw::NavigationView, Rc
     navigation.add(&adw::NavigationPage::builder().title(tr("ADB file transfer")).tag("adb-transfer").child(&toolbar).build());
     let weak=navigation.downgrade();let controller=Rc::downgrade(&adb);
     adb_entry.connect_activated(move |_| {if let Some(view)=weak.upgrade(){view.push_by_tag("adb-transfer");}if let Some(p)=controller.upgrade(){p.refresh_devices();}});
-    (navigation,adb)
+    let toolbar=adw::ToolbarView::new();toolbar.add_top_bar(&adw::HeaderBar::new());toolbar.set_content(Some(&gallery.widget));
+    navigation.add(&adw::NavigationPage::builder().title(tr("Gallery")).tag("gallery").child(&toolbar).build());
+    let weak=navigation.downgrade();gallery_entry.connect_activated(move |_| {if let Some(view)=weak.upgrade(){view.push_by_tag("gallery");}});
+    (navigation,adb,gallery)
 }
 
 impl FilesPage {
@@ -390,7 +399,7 @@ impl FilesPage {
         let clamp = adw::Clamp::builder().maximum_size(1400).tightening_threshold(1400).child(&column).build();
         let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build();
 
-        let (navigation,adb)=files_navigation(&scroller);
+        let (navigation,adb,gallery)=files_navigation(&scroller);
         let page = Rc::new(Self {
             toasts: toasts.clone(),
             banner,
@@ -406,6 +415,7 @@ impl FilesPage {
             auto_mount,
             share,
             adb,
+            gallery,
             st: RefCell::new(State {
                 connected: false,
                 phase: Phase::Unmounted,
@@ -475,6 +485,8 @@ impl FilesPage {
             }
         });
     }
+
+    pub fn peer_changed(&self, status: &crate::daemon::Status) {self.adb.peer_changed(status);self.gallery.peer_changed(status);}
 
     pub fn set_connected(self: &Rc<Self>, connected: bool) {
         self.share.set_connected(connected);
@@ -905,6 +917,7 @@ impl FilesPage {
     /// left. A no-op when nothing is mounted. Closing the window to the tray never calls this.
     pub fn shutdown(&self) {
         self.adb.shutdown();
+        self.gallery.shutdown();
         self.share.shutdown();
         let (child, dir) = {
             let mut st = self.st.borrow_mut();
@@ -1019,7 +1032,7 @@ mod tests {
     fn navigation_retains_the_existing_content_when_returning_home() {
         adw::init().unwrap();
         let content=gtk::Box::new(gtk::Orientation::Vertical,0);
-        let (view,_adb)=files_navigation(&content);
+        let (view,_adb,_gallery)=files_navigation(&content);
         assert_eq!(view.visible_page().unwrap().tag().as_deref(),Some("files-home"));
         for _ in 0..3 {
             view.push_by_tag("storage-sharing");
@@ -1029,6 +1042,11 @@ mod tests {
             assert!(view.pop());
             assert_eq!(view.visible_page().unwrap().tag().as_deref(),Some("files-home"));
         }
+        view.push_by_tag("gallery");
+        assert_eq!(view.visible_page().unwrap().tag().as_deref(),Some("gallery"));
+        assert!(!_gallery.widget.is_mapped(),"hidden navigation test must not scan a phone");
+        assert!(view.pop());
+        assert_eq!(view.visible_page().unwrap().tag().as_deref(),Some("files-home"));
         assert!(content.parent().is_some());
     }
 

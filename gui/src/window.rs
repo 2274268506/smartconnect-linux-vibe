@@ -633,6 +633,11 @@ impl Ui {
         let switcher = adw::ViewSwitcher::builder().stack(&views).policy(adw::ViewSwitcherPolicy::Wide).build();
         let header = adw::HeaderBar::builder().title_widget(&switcher).build();
         header.pack_start(&device.button);
+        let quit_app = gtk::Button::builder().label(tr("Quit"))
+            .tooltip_text(tr("Quit Smart Connect and stop its managed service")).build();
+        let app_actions = gtk::Box::builder().spacing(6).build();
+        app_actions.append(&quit_app);
+        header.pack_end(&app_actions);
         let switcher_bar = adw::ViewSwitcherBar::builder().stack(&views).build();
         toasts.set_child(Some(&root));
         let toolbar = adw::ToolbarView::new();
@@ -647,9 +652,9 @@ impl Ui {
             .default_height(760)
             .content(&toolbar)
             .build();
-        // Six page names plus the device menu don't fit a narrow header: then the switcher moves to
+        // Page names, the device menu and app actions need room: the switcher moves to
         // a bar at the bottom and the header keeps the window title and the device menu.
-        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 780sp").expect("valid breakpoint condition"));
+        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 1000sp").expect("valid breakpoint condition"));
         narrow.add_setter(&header, "title-widget", Some(&None::<gtk::Widget>.to_value()));
         narrow.add_setter(&switcher_bar, "reveal", Some(&true.to_value()));
         window.add_breakpoint(narrow);
@@ -685,6 +690,10 @@ impl Ui {
         ui.refresh_device_offline();
         ui.refresh_down();
         ui.connect_signals();
+        let weak = Rc::downgrade(&ui);
+        quit_app.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() { ui.quit(); }
+        });
         let weak = Rc::downgrade(&ui);
         views.connect_visible_child_name_notify(move |views| {
             let Some(ui) = weak.upgrade() else { return };
@@ -824,7 +833,7 @@ impl Ui {
                 ui.clear_all_notifications();
             }
         });
-        // Closing the window only hides it to the tray; Quit (from the tray) is the only way out.
+        // Closing the window only hides it to the tray; Quit (from the header or tray) exits the application.
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
             if let Some(ui) = weak.upgrade() {
@@ -937,7 +946,7 @@ impl Ui {
         }
     }
 
-    /// Quit: stop our helpers and the daemon we manage, then leave. The only exit path.
+    /// Quit: stop our helpers and the daemon we manage, then leave.
     fn quit(self: &Rc<Self>) {
         self.shutdown();
         self.daemon_ctl.borrow_mut().stop();
@@ -963,25 +972,18 @@ impl Ui {
         group.add(&start_at_login);
         let language = adw::ComboRow::builder()
             .title(tr("Language"))
-            .subtitle(tr("Restart the app to apply the selected language"))
+            .subtitle(tr("Quit and reopen the app to apply the selected language"))
             .model(&gtk::StringList::new(&[tr("Follow system"), "简体中文", "English", "Français", "Español"]))
             .selected(prefs::load().language.index())
             .build();
-        let restart = gtk::Button::builder()
-            .label(tr("Restart to apply"))
-            .valign(gtk::Align::Center)
-            .sensitive(prefs::load().language != crate::i18n::current_language())
-            .build();
-        language.add_suffix(&restart);
         let weak = Rc::downgrade(self);
-        let restart_button = restart.clone();
         language.connect_selected_notify(move |row| {
             let mut settings = prefs::load();
             let before = settings.language;
             settings.language = crate::i18n::Language::from_index(row.selected());
             if settings.language == before { return; }
             match prefs::save_language(settings.language) {
-                Ok(()) => restart_button.set_sensitive(settings.language != crate::i18n::current_language()),
+                Ok(()) => {},
                 Err(error) => {
                     if let Some(ui) = weak.upgrade() {
                         ui.toast(&crate::tr_format!("Could not save language: {error}", "无法保存语言设置：{error}"));
@@ -989,23 +991,6 @@ impl Ui {
                     // Do not emit another save while restoring the actual selection.
                     row.set_selected(before.index());
                 }
-            }
-        });
-        let weak = Rc::downgrade(self);
-        restart.connect_clicked(move |_| {
-            let Some(ui) = weak.upgrade() else { return };
-            let result = std::env::current_exe().and_then(|exe| {
-                std::process::Command::new("sh")
-                    .args(["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec \"$0\""])
-                    .arg(exe).arg(std::process::id().to_string())
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-            });
-            match result {
-                Ok(_) => { if let Some(app) = ui.window.application() { app.quit(); } }
-                Err(error) => ui.toast(&crate::tr_format!("Could not restart: {error}", "无法重启：{error}")),
             }
         });
         group.add(&language);
@@ -1196,6 +1181,7 @@ impl Ui {
         self.desktop.set_connected(connected);
         self.cross.set_connected(connected);
         self.files.set_connected(connected);
+        if let Some(status) = self.state.borrow().status.as_ref() {self.files.peer_changed(status);}
         self.refresh_phone();
         self.refresh_notifications();
         self.refresh_pair();
@@ -2065,7 +2051,7 @@ mod language_tests {
         assert_eq!(ui.notif_page.badge_number(), 0);
         assert!(!ui.phone.notifications_card.get_visible(), "SMS must not link to an empty notification page");
         assert!(ui.phone.sms_unread.get_visible());
-        assert_eq!(ui.phone.sms_unread.text(), "2 条未读短信/彩信（请在手机查看）");
+        assert_eq!(ui.phone.sms_unread.text(), "2 条未读短信/彩信");
         let notification = |key: &str| Notification { key:key.into(), app:"Example".into(), title:"Example notification".into(), ..Notification::default() };
         ui.state.borrow_mut().status.as_mut().unwrap().notifications = vec![notification("first"),notification("second")];
         ui.refresh_notifications();
@@ -2134,20 +2120,6 @@ mod language_tests {
         ui.window.destroy();
     }
 
-    fn restart_button(widget: &gtk::Widget) -> Option<gtk::Button> {
-        if let Some(button) = widget.downcast_ref::<gtk::Button>() {
-            if button.label().as_deref() == Some(tr("Restart to apply")) {
-                return Some(button.clone());
-            }
-        }
-        let mut child = widget.first_child();
-        while let Some(widget) = child {
-            if let Some(button) = restart_button(&widget) { return Some(button); }
-            child = widget.next_sibling();
-        }
-        None
-    }
-
     fn find_combo(widget: &gtk::Widget, title: &str) -> Option<adw::ComboRow> {
         if let Some(row) = widget.downcast_ref::<adw::ComboRow>() {
             if row.title() == title {
@@ -2191,7 +2163,7 @@ mod language_tests {
             dialog.force_close();
             ui.open_preferences();
             let reopened = ui.window.visible_dialog().unwrap();
-            assert_eq!(restart_button(reopened.upcast_ref()).unwrap().is_sensitive(), expected != language);
+            assert_eq!(find_combo(reopened.upcast_ref(),tr("Language")).unwrap().selected(),expected.index());
             reopened.force_close();
             ui.window.destroy();
         }

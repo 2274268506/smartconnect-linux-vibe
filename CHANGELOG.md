@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-25
+
+- Add Files → Gallery with photo-folder navigation, 24-image pages, oriented previews, cancellation and protected original downloads.
+- Batch a page of thumbnails into one Android process and reuse a bounded RAM cache; 24 repeated synthetic-image requests improved from 30.7 s to 1.5 s on the test phone (excluding discovery/setup/listing).
+- Add prominent SMS Read/Unread badges, mark-all-read, one conversation Close button, phone-confirmed updates and event-triggered unread counter refresh; synchronize SMS and MMS.
+- Follow the paired phone’s changing address for ADB file transfer while preserving manual device choices and avoiding automatic transfer retries.
+- Add main-window Quit and remove application restart buttons; save language changes for the next application launch.
+- Remove obsolete restart code/translations, duplicate note-index entries and local artifacts from previous releases; refresh installation guides.
+
 ## [0.3.0] - 2026-11-25
 
 - Extend scrcpy capture power isolation and guarded physical double-tap wake from desktop mode to app streams, recognizing their tagged virtual-display names.

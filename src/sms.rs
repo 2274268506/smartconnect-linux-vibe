@@ -73,6 +73,11 @@ pub fn request_messages(kind: i64) -> Value {
     request(cmd::GET_MESSAGES_PLUS, Some(json!({ "type": kind, "count": 0 })))
 }
 
+/// The home badge counts both types; the Messages view must request both too.
+pub fn request_message_types() -> [Value; 2] {
+    [request_messages(KIND_SMS), request_messages(KIND_MMS)]
+}
+
 /// Up to `count` newest messages of one kind in a single reply (`cmd 11`).
 pub fn request_messages_limited(kind: i64, count: i64) -> Value {
     request(cmd::GET_MESSAGES, Some(json!({ "type": kind, "count": count })))
@@ -270,6 +275,12 @@ impl SmsState {
         }
     }
 
+    /// Only incoming unread messages are eligible; keep SMS/MMS IDs in separate namespaces.
+    pub fn unread_targets(&self) -> Vec<(i64, i64)> {
+        self.messages.values().filter(|m| m.message_type == MSG_RECEIVED && !m.read)
+            .map(|m| (m.id, m.kind)).collect()
+    }
+
     /// Conversations, newest first.
     pub fn threads(&self) -> Vec<Value> {
         let mut by: BTreeMap<String, Vec<&Msg>> = BTreeMap::new();
@@ -343,7 +354,7 @@ pub fn request_sync(daemon: &Daemon) {
     }
     send(request(cmd::GET_PHONE_NUMBER, None));
     send(request_contacts());
-    send(request_messages(KIND_SMS));
+    for request in request_message_types() {send(request);}
 }
 
 /// Keeps `store()` up to date from `daemon.from_phone`. Called once (from the control server).
@@ -377,6 +388,22 @@ pub fn spawn_collector(daemon: Arc<Daemon>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_sync_covers_sms_and_mms_without_read_or_send_commands() {
+        let requests=request_message_types();
+        assert_eq!(requests.map(|v|(v["cmd"].as_i64().unwrap(),v["data"]["type"].as_i64().unwrap())),[(28,1),(28,2)]);
+    }
+    #[test]
+    fn bulk_read_targets_preserve_kind_and_exclude_read_and_outgoing_messages() {
+        let mut state = SmsState::default();
+        for (kind, id, read, message_type) in [(1,7,0,1),(2,7,0,1),(1,8,1,1),(1,9,0,2)] {
+            let message = Msg::parse(kind, &json!({"msgId":id,"read":read,"messageType":message_type})).unwrap();
+            state.messages.insert((kind,id),message);
+        }
+        assert_eq!(state.unread_targets(),vec![(7,1),(7,2)]);
+        assert!(!state.messages[&(1,7)].read,"queuing targets must not claim phone confirmation");
+    }
 
     #[test]
     fn request_shapes() {

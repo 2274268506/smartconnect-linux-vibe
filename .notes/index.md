@@ -63,7 +63,6 @@ published. The public protocol reference is [`docs/protocol/`](../docs/protocol/
 
 - [mirror-video-stalls.md](mirror-video-stalls.md) — metadata-only video/input progress, bounded keyframe retries after decode/input stalls, and lost-feedback media regression.
 
-- [sms-unread-refresh.md](sms-unread-refresh.md) — historical metadata-polling experiment and removal at the user’s request; current unread status follows phone pushes.
 
 - [mirror-udp-buffer.md](mirror-udp-buffer.md) — high-resolution burst loss, per-libnice-socket receive buffers, kernel-limit diagnostics and socket integration tests.
 
@@ -124,3 +123,17 @@ published. The public protocol reference is [`docs/protocol/`](../docs/protocol/
 - [scrcpy-app-power.md](scrcpy-app-power.md) — reuse isolated capture and guarded physical double-tap wake for app sessions, with tagged-name/source validation.
 
 - [v0.3.0 release](release-0.3.0.md): version alignment, tested Arch packaging and documented streaming/audio limitations.
+
+- [messages-read-status.md](messages-read-status.md) — explicit incoming read indicators and bounded phone-confirmation handling, with no recipient receipt inference.
+
+- [main-window-actions.md](main-window-actions.md) — header Quit action and removal of application-restart controls.
+
+- [sms-actions-and-adb-discovery.md](sms-actions-and-adb-discovery.md) — stronger unread styling, bulk read actions, dialog close, phone write-operation diagnosis and paired-address ADB rediscovery.
+
+- [adb-gallery.md](adb-gallery.md) — read-only paged albums, phone-side bounded thumbnails/previews and explicit original downloads.
+
+- [gallery-performance.md](gallery-performance.md) — amortize Android process startup per page, bounded thumbnail frames and a refresh-safe RAM LRU inspired by open-source image loaders.
+
+- [sms-unread-refresh.md](sms-unread-refresh.md) — event-triggered unread metadata refresh and SMS/MMS scope alignment; no polling timer.
+
+- [release-0.4.0.md](release-0.4.0.md) — gallery/SMS release, restart removal, obsolete-file cleanup and artifact validation.

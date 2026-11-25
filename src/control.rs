@@ -167,7 +167,7 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
         }
         // SMS (svc 204, see sms.rs). Requests are fire-and-forget; data lands in `sms_state`.
         "sms_state" => crate::sms::store().lock().unwrap().snapshot().to_string(),
-        "sms_threads" | "sms_thread" | "sms_send" | "sms_mark_read" if !daemon.is_connected() => {
+        "sms_threads" | "sms_thread" | "sms_send" | "sms_mark_read" | "sms_mark_all_read" if !daemon.is_connected() => {
             json!({ "ok": false, "message": "phone not connected" }).to_string()
         }
         // {"cmd":"sms_threads"}: (re)sync SMS from the phone; returns the cached conversation list.
@@ -182,7 +182,7 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             if key.is_empty() {
                 return json!({ "ok": false, "message": "sms_thread needs thread" }).to_string();
             }
-            if v.get("refresh").and_then(serde_json::Value::as_bool).unwrap_or(true) {let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::request_messages(crate::sms::KIND_SMS)));}
+            if v.get("refresh").and_then(serde_json::Value::as_bool).unwrap_or(true) {for request in crate::sms::request_message_types(){let _=daemon.to_phone.send((crate::sms::SERVICE_MESSAGE,request));}}
             let st = crate::sms::store().lock().unwrap();
             json!({ "ok": true, "thread": crate::sms::thread_key(key), "messages": st.thread(key), "cacheOnlySupported":true }).to_string()
         }
@@ -203,6 +203,15 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::send_sms(req, &[to.clone()], text, -1)));
             json!({ "ok": true, "message": "sms handed to phone", "requestId": req, "to": to }).to_string()
         }
+        "sms_mark_all_read" => {
+            let targets = crate::sms::store().lock().unwrap().unread_targets();
+            for (id, kind) in &targets {
+                if daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::mark_read(*id, *kind, true))).is_err() {
+                    return json!({"ok":false,"message":"phone not connected"}).to_string();
+                }
+            }
+            json!({"ok":true,"message":"read requests queued","count":targets.len()}).to_string()
+        }
         // {"cmd":"sms_mark_read","id":N} (SMS id from sms_thread)
         "sms_mark_read" => {
             let Some(id) = v.get("id").and_then(serde_json::Value::as_i64) else {
@@ -210,7 +219,9 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             };
             let kind=v.get("kind").and_then(Value::as_i64).unwrap_or(crate::sms::KIND_SMS);
             if !matches!(kind,1|2){return json!({"ok":false,"message":"kind must be SMS (1) or MMS (2)"}).to_string();}
-            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::mark_read(id, kind, true)));
+            if daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::mark_read(id, kind, true))).is_err() {
+                return json!({"ok":false,"message":"phone not connected"}).to_string();
+            }
             json!({ "ok": true, "message": "sent" }).to_string()
         }
         other => json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string(),

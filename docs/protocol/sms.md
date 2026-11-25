@@ -138,7 +138,7 @@ sequenceDiagram
 
 ## This project
 
-- `sms_threads` sends `cmd 18` (only while not enabled), then `12`, `1` and `28` for SMS, and
+- `sms_threads` sends `cmd 18` (only while not enabled), then `12`, `1` and `28` for SMS and MMS, and
   returns the cached conversations; when the phone later reports `enabled: true`, the sync is sent
   again automatically.
 - Conversations are grouped by the other party's address: the last 10 digits for phone numbers (so
@@ -153,8 +153,7 @@ sequenceDiagram
 3. **Silent drops while not enabled.** If nothing comes back, look at `enabled` in `cmd 1018`.
 4. **`cmd 18` works only once per PC.** After that, re-enabling is up to the user on the phone.
 5. **10-day window.** Older messages are never returned.
-6. **Mark-as-read guard.** The decompiled handler for `cmd 8` reads like an inverted null check;
-   it is assumed to work normally (INFERRED).
+6. **Mark-as-read permission.** Raw instruction inspection confirms non-null `cmd 8` data is processed (OBSERVED); structured decompilation had inverted this guard. Updating the SMS provider requires the phone app’s `WRITE_SMS` app operation. A rejected update has no protocol failure acknowledgement.
 7. **Privacy.** Message bodies, numbers and contact names are personal data. Keep them out of logs.
 
 ## Open questions
@@ -164,3 +163,9 @@ sequenceDiagram
 - Whether advertising `"204"` changes anything.
 
 **OBSERVED (implementation):** GUI open/refresh sends one existing sync sequence and briefly reads the local cache using `refresh:false`, which generates no additional service-204 requests. Read marks retain SMS/MMS kind. Send success in the UI means queued to the phone, not final delivery. No real SMS was sent during local integration validation.
+
+**OBSERVED (implementation):** The GTK Messages list and incoming message bubbles expose the cached `read` state. After queuing `cmd 8`, the UI checks `sms_thread` with `refresh:false` up to nine times over two seconds for matching `(kind, msgId)` updates. A queued request is not treated as phone confirmation; failure or timeout preserves the reported state. Outgoing `read` describes the phone store and is not a recipient read receipt. No real messages were sent or marked during regression testing.
+
+**OBSERVED (implementation):** `sms_mark_all_read` snapshots cached incoming unread `(kind, msgId)` targets and queues existing `cmd 8` requests. It never changes cached flags optimistically. The GUI waits briefly for phone-pushed confirmation and keeps unread indicators on failure.
+
+**OBSERVED (implementation/device):** A stale home count of one coexisted with zero unread cached conversations and zero unread SMS/MMS provider rows; one `cmd 1016` query returned a fresh zero. The GUI now requests this metadata once per connection edge, explicit Messages open/refresh and completed read attempt. Cache-only reads send no metadata requests. This does not fetch contacts/bodies or mark messages by itself, and adds no periodic timer. Full conversation requests cover both message types so MMS is not omitted while the home badge counts SMS/MMS.

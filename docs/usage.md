@@ -26,7 +26,7 @@ Status keys used on this page, the same as in the [README](../README.md#feature-
 | Front-end | What it can do |
 |---|---|
 | The Smart Connect app on the phone | Pair (scan the QR), Connect, Disconnect, and the tiles on the PC's device page (App streaming, Cross Control, PC lock, Hotspot, Webcam). Starting the PC's screen on the phone. |
-| GTK app (`smartconnect-gui`, **Smart Connect** in the app launcher) | A header **device menu** (left of the title) shows the connected device and holds *Pair new phone…*, *Preferences* (the *Start at login* switch) and *Connect/Disconnect*. A view switcher has six pages. *Phone*: a phone card (wallpaper, name, an inline battery / Wi-Fi / mobile / Bluetooth row, and **Mirror screen**), a shortcut counting visible notifications, a separate unread SMS/MMS status, and a Cross Control switch with an edge picker. While the phone is away the card keeps showing the last connected phone (dimmed last-known values, "last connected …") with a **Connect** button; with no phone paired it offers **Pair a phone**. If the Smart Connect service isn't running, the window says so, shows the last phone, and has a **Start service** button. *Apps*: a search box, Recent chips and an icon grid to stream single phone apps. *Desktop mode*: the phone’s mobile desktop in a PC window with resolution controls. *Display*: the phone as a second monitor or a copy of your screen (Layout / Experimental / Advanced groups). *Files*: mount the phone's storage, quick-folder shortcuts, and storage settings. *Notifications*: notifications grouped under *Today* with reply boxes, a ⋯ menu (*Open on phone*, *Dismiss*, *Mute app*) and per-app mute. Pairing opens in a dialog. In a narrow window the page switcher moves to the bottom. It also puts a [tray icon](#tray-icon-and-background-running) in the system tray and starts the daemon when you open it. |
+| GTK app (`smartconnect-gui`, **Smart Connect** in the app launcher) | A header **device menu** (left of the title) shows the connected device and holds *Pair new phone…*, *Preferences* (the *Start at login* switch) and *Connect/Disconnect*. A view switcher has six pages. *Phone*: a phone card (wallpaper, name, an inline battery / Wi-Fi / mobile / Bluetooth row, and **Mirror screen**), a shortcut counting visible notifications, a separate unread SMS/MMS status, and a Cross Control switch with an edge picker. While the phone is away the card keeps showing the last connected phone (dimmed last-known values, "last connected …") with a **Connect** button; with no phone paired it offers **Pair a phone**. If the Smart Connect service isn't running, the window says so, shows the last phone, and has a **Start service** button. *Apps*: a search box, Recent chips and an icon grid to stream single phone apps. *Desktop mode*: the phone’s mobile desktop in a PC window with resolution controls. *Display*: the phone as a second monitor or a copy of your screen (Layout / Experimental / Advanced groups). *Files*: Gallery, ADB file transfer and Storage and sharing subpages. *Notifications*: notifications grouped under *Today* with reply boxes, a ⋯ menu (*Open on phone*, *Dismiss*, *Mute app*) and per-app mute. Pairing opens in a dialog. In a narrow window the page switcher moves to the bottom. It also puts a [tray icon](#tray-icon-and-background-running) in the system tray and starts the daemon when you open it. |
 | Noctalia plugin | Bar pill with battery level. Panel with the phone card (wallpaper, battery, signal, unread count), Connect/Disconnect, the pairing QR, Mirror screen, Cross Control with an edge selector, Phone as display with an Extend/Duplicate switch, a Phone files tile (mount, open, unmount), and recent notifications with reply boxes and mute buttons. Settings for the display, the phone files and the muted apps. An [IPC target](#noctalia-ipc) for keybindings. |
 | CLI | `smartconnectd` with `status`, `subscribe`, `connect`, `disconnect` or `pair`, plus the helper programs. See the [reference](#command-line-reference). |
 | Your own scripts | The [control socket API](control-socket-api.md). |
@@ -184,17 +184,15 @@ address in its invites.
 
 New configurations default to **English**. Existing explicit choices are retained.
 In the GTK app, open the device menu → **Preferences → Language**. Choose **Follow system**,
-**English**, **简体中文**, **Français** or **Español**, then press **Restart to apply**. The choice is saved immediately in
+**English**, **简体中文**, **Français** or **Español**, then **Quit** and open the application again. The choice is saved immediately in
 `$XDG_CONFIG_HOME/smartconnect-linux/gui.json` (normally `~/.config/smartconnect-linux/gui.json`)
-as `"language":"system"`, `"en"`, `"zh-CN"`, `"fr"` or `"es"`. Reopening Preferences keeps the restart button
-available while a different language is pending.
+as `"language":"system"`, `"en"`, `"zh-CN"`, `"fr"` or `"es"`. Reopening Preferences shows the saved choice; language is applied at the next application launch.
 
 Follow system checks the first nonempty `LC_ALL`, `LC_MESSAGES` or `LANG`: Chinese locales use
 Simplified Chinese, French locales use French, Spanish locales use Spanish, and other locales use English. The switch controls the GTK application's own
 pages, menus and tray actions. Phone app names, notification contents, file paths, technical
 logs and the Noctalia plugin are not translated by this setting. System-provided dialogs may
-continue to use the desktop's language. Restarting follows normal GUI shutdown behavior for
-GUI-owned helper sessions and file mounts; it does not request a daemon stop.
+continue to use the desktop's language. Use the header or tray Quit action to fully exit before reopening; it performs the normal helper, mount and managed-daemon cleanup.
 
 ## Tray icon and background running
 
@@ -210,7 +208,7 @@ shows or hides the window; right-click opens a menu with **Show/Hide Window**, *
 - **Opening the app starts the daemon** if it isn't already running. It prefers the
   `systemctl --user` unit when that is installed, otherwise it runs `smartconnectd` itself. The
   window shows *Starting smartconnectd…* until the control socket answers.
-- **Quit** (tray menu only) leaves the app *and* stops the daemon — the systemd unit with
+- **Quit** (main-window header or tray menu) leaves the app *and* stops the daemon — the systemd unit with
   `systemctl --user stop smartconnectd`, or the `smartconnectd` the app started as a child. A daemon
   you started by hand (e.g. in a terminal) is left running.
 - **Start at login:** the switch on the *Phone* page adds or removes
@@ -1468,3 +1466,21 @@ For comparison/debugging only, start the stream host with `SMARTCONNECT_SCRCPY_C
 On supported Motorola phones, the isolated app/desktop launcher also listens for the phone's own double-tap hardware gesture while an app or desktop capture is active. It requests wake only for the corresponding sleeping physical display, with the existing double-tap setting enabled and a known-clear proximity sensor. It leaves normal Android gesture handling registered, does not change settings, and does not unlock the device. If sensor APIs or the expected sensor types are unavailable, the normal phone behavior remains in effect. Restart the app/desktop stream after updating the launcher.
 
 App streaming uses the same power-isolation and physical wake scheme as desktop mode. It retains the app’s renderer, resolution, bitrate/frame rate and audio/input settings. Tagged native app-display names are recognized, while physical screens and whole-screen/virtual-phone views are excluded. The existing Cancel startup path is unchanged.
+
+## Messages read status
+
+The Messages list shows **Unread** or **Read** beside each conversation; unread counts remain in its preview. Incoming message bubbles show their phone-reported read state. Opening a conversation requests marking incoming unread SMS/MMS as read and briefly checks the daemon cache for confirmation. If the phone does not confirm, the original state remains with a refresh prompt. This is bounded local-cache checking, not recurring phone polling. Outgoing bubbles show **Sent**; SMS recipient read receipts are unavailable. Refresh to fetch later phone-side changes.
+
+Unread SMS conversations now use bold titles and filled theme-accent badges; incoming unread bubbles use the same badge. **Mark all as read** operates on synchronized incoming unread SMS/MMS and waits for phone updates. If the phone refuses marking, see [SMS write permission troubleshooting](troubleshooting.md#computer-cannot-mark-sms-as-read). Conversation dialogs have an explicit **Close** button. ADB file transfer also follows a connected paired phone’s changing network address, on open/refresh and while its page is visible; rediscovery waits until any active file job finishes.
+
+## Photo gallery
+
+Open **Files → Gallery** with authorized USB/network ADB. The gallery uses the paired phone’s live address when available; choose a device when several are connected. Camera/DCIM, Pictures and Downloads shortcuts open shared-storage folders. Click a subfolder or enter a `/sdcard` path, and use Up to return. Photos appear in descending filename order, 24 per page; Previous/Next page through the current folder. Video files are excluded.
+
+Click a photo for an oriented preview; **Download original…** saves the original into a chosen computer folder without overwriting existing files. Close dismisses the preview. Cancel or leaving Gallery stops thumbnail work. Startup does not scan albums. Thumbnails (256-pixel bounds) and previews (2048-pixel bounds) are generated on the Android 9+ phone, so browsing does not download every original. Supported formats depend on its decoder; animated pictures use a still frame. Preview JPEG may flatten transparency; downloaded originals retain their format and metadata. No persistent photo cache is created. Temporary helper cleanup after lost connectivity or process exit is best effort.
+
+The SMS reply dialog keeps one explicit **Close** button; automatic title-bar controls are disabled in that dialog to avoid duplicate close buttons.
+
+Gallery performance: each page batches up to 24 thumbnails into one phone-side process. Recently visited thumbnails are reused from RAM for up to 30 seconds (96 entries / 8 MiB maximum). **Refresh devices** clears the thumbnail cache as well as rediscovering devices; use it after replacing a photo at the same path. Paired-peer changes invalidate the cache. No disk photo cache is created, and full previews/original downloads are requested fresh.
+
+The home SMS/MMS badge uses a phone-reported counter. To avoid a stale unread badge after the phone has read a message, the GUI requests fresh unread metadata on connection, Messages open/refresh and read-action completion. This is a one-shot metadata request; it does not mark anything read or introduce periodic polling. Conversation refresh includes both SMS and MMS.

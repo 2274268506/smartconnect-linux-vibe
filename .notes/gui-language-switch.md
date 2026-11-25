@@ -14,10 +14,7 @@ Preferences saves only the language field atomically, preserving other and futur
 and leaving shared display.json untouched. Display edits load fresh GUI settings before saving,
 so a pending language choice cannot be overwritten by the page's cached preferences.
 
-Restart to apply launches the same executable after the current GUI process exits, using quoted
-positional shell arguments, and quits the application without the tray Quit action's daemon stop.
-Normal GUI shutdown still cleans up GUI-owned helper sessions and mounts. A failed save restores
-the persisted selection; reopening Preferences keeps a pending restart available.
+Language changes are saved immediately and take effect after Quit and reopening the app. Application restart buttons and the delayed executable-launch helper were removed in v0.4.0 at the user's request. A failed save restores the persisted selection; reopening Preferences shows the saved language.
 
 Tests cover locale precedence, explicit overrides, fallback, translated text, serialization and
 preserving unrelated preferences. A separate desktop-session GTK test opens Preferences in both

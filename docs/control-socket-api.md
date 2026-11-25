@@ -399,7 +399,7 @@ The whole cache. Works without a connected phone. This reply has no `ok` field.
 #### `sms_threads`
 
 Starts a sync and returns the cached conversations. The sync asks for the phone number, contacts,
-and all SMS from about the last 10 days. If Messages isn't enabled for this PC yet, the daemon first
+and SMS/MMS from about the last 10 days. If Messages isn't enabled for this PC yet, the daemon first
 sends the "PC ready" message that enables it, and syncs again once the phone reports `enabled:true`.
 
 ```
@@ -679,3 +679,9 @@ Hosts advertise `scrcpyInputSettings:true`. `scrcpy.mouseSpeedPercent` is an int
 Hosts advertise `scrcpyAudio:true`. `scrcpy.audio` is a boolean (default true), persisted independently for app/desktop and exposed in `requestedScrcpy`. True passes `--audio-source=output`; false passes `--no-audio`. It never selects a microphone source or requires audio to keep video running. The selection applies on the next projection, without changing the built-in renderer.
 
 `capabilities.independentAudio:true` supports boolean `scrcpy.independentAudio` (default false), persisted and exposed in `requestedScrcpy`. With `audio:true`, it selects `--audio-source=playback` and requires a verified Android SDK level >=33; unsupported/unknown levels return a startup error. With `audio:false`, `--no-audio` wins and the saved independent setting is ignored. No phone volume setter or duplication flag is sent.
+
+### `sms_mark_all_read`
+
+Requires a connected phone. Queues the existing mark-read command for every incoming unread SMS/MMS currently in the daemon cache, preserving each message kind. Example: `{"cmd":"sms_mark_all_read"}` → `{"ok":true,"message":"read requests queued","count":2}`. The count describes queued requests; it is not phone confirmation. Watch subsequent cached message `read` flags. Outgoing and already-read messages are excluded.
+
+Explicit `sms_threads`/`sms_thread` sync now requests both SMS and MMS. The GUI separately refreshes the home unread metadata using `send` with service 204 `{ver:"5.0", cmd:1016, pId:110}` once per connection edge, Messages open/refresh and completed read attempt. The phone’s service-100 cmd-1018 response updates status; cache-only reads themselves still emit no phone requests. No timer polling is added.

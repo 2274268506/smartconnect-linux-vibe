@@ -20,6 +20,9 @@ mod messages;
 mod files;
 mod adb_transfer;
 mod adb_files;
+mod gallery;
+mod gallery_cache;
+mod gallery_transfer;
 mod icons;
 mod i18n;
 mod lastdevice;
@@ -44,7 +47,7 @@ use gtk::{gdk, glib};
 
 const APP_ID: &str = "dev.smartconnect.Linux";
 
-// Structural CSS only — spacing and radius, never colours. Colours come from the user's theme via
+// Structural CSS uses theme colours. Colours come from the user's theme via
 // libadwaita style classes (.card, .dim-label, .error, …). The one exception is the QR code's white
 // backdrop, which is functional: a QR must stay dark-on-light to scan under any theme.
 const CSS: &str = "
@@ -57,6 +60,8 @@ picture.qr { background: white; border-radius: 12px; padding: 12px; }
 .sc-dimmed { opacity: 0.55; }
 .sc-badge { padding: 1px 8px; border-radius: 9999px; min-height: 0; }
 .sc-notif { padding: 12px; }
+.sc-unread-badge { opacity: 1; background-color: @accent_bg_color; color: @accent_fg_color; font-weight: bold; border-radius: 999px; padding: 3px 8px; }
+.sc-unread-thread .title { font-weight: bold; }
 ";
 
 fn main() -> glib::ExitCode {

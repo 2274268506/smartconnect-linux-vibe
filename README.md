@@ -4,7 +4,7 @@
 
 这是一个以 vibe coding 方式持续改进的 Linux Smart Connect 分支：在上游功能基础上，增加 scrcpy 应用投屏与完整桌面模式、折叠手机输入兼容、自定义分辨率/码率/帧率、多语言、电脑/手机输入法，以及独立于手机媒体音量的电脑音频采集。
 
-**当前版本：v0.3.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
+**当前版本：v0.4.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
 
 The project is modified from the upstream repository linked above. It preserves the original license, credits and executable names. The scrcpy backend is optional and requires authorized ADB; the original Smart Connect backend does not require ADB.
 
@@ -24,7 +24,7 @@ On Android 15+, scrcpy app and desktop capture use the native streaming display�
 
 Scrcpy desktop mode supplements top-edge hover through the native mouse channel on X11/XWayland, allowing the phone to reveal its auto-hidden app title bar. Fullscreen app behavior is preserved.
 
-The **Files** tab offers **ADB file transfer** for direct USB/network uploads and downloads, and **Storage and sharing** for phone mounts, quick folders, automatic mounting and PC-folder sharing.
+The **Files** tab offers **Gallery** for paged photo-folder browsing, previews and original downloads, **ADB file transfer** for direct USB/network uploads and downloads, and **Storage and sharing** for phone mounts, quick folders, automatic mounting and PC-folder sharing.
 
 It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwaita app and a
 [Noctalia Shell](https://github.com/noctalia-dev/noctalia) plugin.
@@ -54,7 +54,7 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.4.0-1-x86_64.pkg.tar.zst
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
 systemctl --user enable --now smartconnectd
@@ -74,7 +74,7 @@ sudo systemctl enable --now avahi-daemon bluetooth
 
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.3.0
+git checkout v0.4.0
 ./packaging/install.sh --enable           # build, install to ~/.local, start the user service
 
 # firewalld example; see docs/installation.md for ufw
@@ -138,7 +138,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Clipboard text, both ways | ✅ | Password-manager copies are never sent to the phone. |
 | Clipboard images (PNG, JPEG, WebP, GIF, BMP) | 🟡 | Image clipboard sync is implemented both ways over fex, limited to 10 MB. Not yet verified on a real phone; HEIC/TIFF inputs and non-image file clipboard transfers are not supported. Password-manager copies remain excluded. |
 | Clipboard files (non-image) | ❌ | File clips are recognized but not transferred. Single-file send/receive UI is not implemented. |
-| SMS (read threads, send, mark read) | 🟡 | GTK Messages page and control API. Explicit refresh, in-memory history, protected drafts; needs phone permission. Real SMS sending is not verified here. |
+| SMS (read threads, send, mark read) | 🟡 | GTK Messages page and control API. Prominent Read/Unread badges, mark all synced messages read, event-triggered unread-metadata refresh and in-memory history; needs phone permission. Real SMS sending is not verified here. |
 
 **Mirroring and app streaming**
 
@@ -189,17 +189,18 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Feature | Status | Notes |
 |---|---|---|
 | Browse the phone's files (mount `/sdcard`) | ✅ | `smartconnect-files mount`: the phone's storage as a read-only FUSE folder, over the phone's own File Station protocol (NFSv3 on mutual TLS, no root or adb). Surviving a phone reconnect or daemon restart, and unmounting cleanly on Ctrl+C/SIGTERM, are tested against this project's own server, not yet through a real phone reconnect. |
-| ADB file transfer | 🟡 | **Files → ADB file transfer**: browse shared storage, upload multiple files, download selected files, toggle individual file checkboxes or clear the selection, cancel operations and protect existing files. Requires authorized USB/network ADB; folders are navigable but recursive folder transfer is not supported. |
+| Photo gallery | 🟡 | **Files → Gallery**: photo folders, 24-image pages, batched phone-generated thumbnails with bounded RAM reuse, oriented previews and no-overwrite original downloads. Requires authorized ADB and Android 9+; formats depend on the phone decoder. Synthetic phone-image and UI checks are documented in development. |
+| ADB file transfer | 🟡 | **Files → ADB file transfer**: browse shared storage, upload multiple files, download selected files, toggle individual file checkboxes or clear the selection, cancel operations and protect existing files. Follows the connected paired phone’s changing IP, preserving manual device choices. Requires authorized USB/network ADB; folders are navigable but recursive folder transfer is not supported. |
 | Phone files in the GTK app | 🟡 | The *Files* page: **Mount**, **Open in Files**, **Unmount**, quick folders (Camera, Screenshots, Downloads, Documents), a mount folder setting (default `~/Phone`) and *Mount automatically when connected*. Wraps the verified helper. |
 | Phone files in the Noctalia panel | 🟡 | The *Phone files* tile: **Mount**, then **Open** and **Unmount**, with the mount folder in the plugin settings. Wraps the verified helper. |
 | Share a PC folder to the phone | ✅ | `smartconnect-files serve`, or *Share with the phone* on the GTK app's Files page: the phone browses a folder (default: your home folder, hidden files excluded) in Smart Connect's **Files tab** (All files, Recents, Images, Videos, …, with thumbnails) and Android's file browser. It can open and copy files, and delete them to your Trash (switchable off). Verified on a phone. Needs TCP 2049 open in your Wi-Fi's firewall zone; video thumbnails need `ffmpeg`. |
 | Writing to the phone | 🟡 | Reverse-engineered; the NFS write path is not implemented yet. |
-| File transfer (push/pull single files) | ❌ | Separate "fex" transport; see [file-exchange.md](docs/protocol/file-exchange.md). No send/receive UI; `smartconnect-fex pull` only fetches an offer whose coordinates you already have. |
+| Native fex transfer (push/pull single files) | ❌ | Separate "fex" transport; see [file-exchange.md](docs/protocol/file-exchange.md). No send/receive UI; `smartconnect-fex pull` only fetches an offer whose coordinates you already have. |
 
 **Desktop app**
 
 The GTK app defaults to English and supports Simplified Chinese, French, Spanish and Follow system. Open the device menu → Preferences →
-Language, choose a language (or Follow system), then press Restart to apply.
+Language, choose a language (or Follow system), then Quit and open the application again.
 
 The **Desktop mode** tab opens the phone's mobile desktop on the PC. It defaults to the computer
 monitor's pixel resolution; presets and Custom are also available. Borderless mode hides the
@@ -221,7 +222,7 @@ App streaming also supports **Apps → Streaming settings → Display method →
 | Feature | Status | Notes |
 |---|---|---|
 | Mobile desktop controls and resolution | ✅ / 🟡 | Desktop mode page: built-in or optional scrcpy/ADB presentation with a complete taskbar, true fullscreen when following the PC resolution, start/stop, save presets or a custom landscape size, restart to apply, and show the phone-reported stream size. 1280×720, 1920×1080 and PC-matched 2880×1920 were tested on a phone; other sizes depend on the phone. |
-| GTK app tray icon and background running | 🟡 | A StatusNotifierItem whose icon tracks the connection state, with Show/Hide, Connect, Disconnect and Quit. Closing the window hides it to the tray; Quit also stops the daemon. Opening the app starts the daemon; *Start at login* runs it hidden at login. Needs a system-tray host (the Noctalia/Quickshell bar provides one). |
+| GTK app tray icon and background running | 🟡 | A StatusNotifierItem whose icon tracks the connection state, with Show/Hide, Connect, Disconnect and Quit. The header provides Quit. Closing the window hides it to the tray; Quit also stops the daemon. Opening the app starts the daemon; *Start at login* runs it hidden at login. Needs a system-tray host (the Noctalia/Quickshell bar provides one). |
 
 </details>
 

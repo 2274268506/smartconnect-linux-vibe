@@ -2,7 +2,7 @@
 
 **本项目修改自 [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux)，保留原项目 MIT 许可证与版权声明。**
 
-版本：**v0.3.0**。发布页：[smartconnect-linux-vibe Releases](https://github.com/2274268506/smartconnect-linux-vibe/releases)。
+版本：**v0.4.0**。发布页：[smartconnect-linux-vibe Releases](https://github.com/2274268506/smartconnect-linux-vibe/releases)。
 
 ## Arch Linux / EndeavourOS 安装包
 
@@ -13,8 +13,8 @@
 ```sh
 mkdir -p smartconnect-vibe-install
 cd smartconnect-vibe-install
-curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.3.0/smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
-curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.3.0/SHA256SUMS
+curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.4.0/smartconnect-linux-vibe-0.4.0-1-x86_64.pkg.tar.zst
+curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.4.0/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
@@ -22,7 +22,7 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 ```sh
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.4.0-1-x86_64.pkg.tar.zst
 # 可选功能：scrcpy 投屏、ADB、剪贴板同步
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
@@ -75,12 +75,18 @@ sudo pacman -S --needed git base-devel rust pkgconf avahi bluez wl-clipboard \
 ```sh
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.3.0
+git checkout v0.4.0
 ./packaging/install.sh --enable
 smartconnect-gui
 ```
 
-也可从 Release 下载 `smartconnect-linux-vibe-0.3.0-source.tar.gz`，解压后运行同一安装脚本。源码方式默认安装到 `~/.local`，无需使用 sudo 运行安装脚本。
+也可从 Release 下载 `smartconnect-linux-vibe-0.4.0-source.tar.gz`，解压后运行同一安装脚本。源码方式默认安装到 `~/.local`，无需使用 sudo 运行安装脚本。
+
+## 本版功能入口
+
+- **文件 → 相册**：通过已授权的 ADB 浏览照片文件夹、翻页、预览和下载原图；手机需 Android 9+。缩略图按页批量生成并在内存中短暂缓存，手动刷新会清空缓存。
+- **短信**：显示未读/已读、全部标为已读和单个关闭按钮。若手机拒绝标为已读，按[短信权限排查](docs/troubleshooting.md#computer-cannot-mark-sms-as-read)检查官方 Smart Connect 的 WRITE_SMS 操作。
+- 主窗口保留**退出**按钮，已移除主程序重启按钮；修改语言后退出并重新打开应用。
 
 ## 更新、卸载与排查
 

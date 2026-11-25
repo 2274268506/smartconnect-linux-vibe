@@ -66,7 +66,7 @@ fn capture(mut input: impl Read) -> std::io::Result<Vec<u8>> {
     }
     Ok(out)
 }
-fn run(args: &[&str], cancel: &Cancel, timeout: Duration) -> Result<Vec<u8>> {
+pub(crate) fn run(args: &[&str], cancel: &Cancel, timeout: Duration) -> Result<Vec<u8>> {
     run_at(&crate::mirror::binary("adb"), args, cancel, timeout)
 }
 fn run_at(binary: &Path, args: &[&str], cancel: &Cancel, timeout: Duration) -> Result<Vec<u8>> {
@@ -195,7 +195,7 @@ pub fn list(device: &str, path: &str, cancel: &Cancel) -> Result<Vec<Entry>> {
     let script=format!("d={}; [ -d \"$d\" ] && [ -r \"$d\" ] && [ -x \"$d\" ] || exit 1; for p in \"$d\"/* \"$d\"/.[!.]* \"$d\"/..?*; do [ -L \"$p\" ] && continue; if [ -d \"$p\" ]; then printf 'd\\0%s\\0' \"$p\"; elif [ -f \"$p\" ]; then printf 'f\\0%s\\0' \"$p\"; fi; done; :",quote(&path));
     parse_listing(&shell(device, &script, cancel)?, &path)
 }
-fn token() -> String {
+pub(crate) fn token() -> String {
     format!(
         "{}-{}-{}",
         std::process::id(),

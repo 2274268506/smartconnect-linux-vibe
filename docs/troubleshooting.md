@@ -647,8 +647,7 @@ may not be replayed after changing sharing settings.
 ## Unread SMS count remains after reading on the phone
 
 The phone may push the count on connection/settings changes without sending an update for a
-local read. The daemon relies on phone-pushed status and does not poll every 15 seconds, so the
-cached count can remain until the next service 100 `cmd 1018` update. App notifications use a
+local read. The GUI requests unread metadata once when connected, when Messages is opened/refreshed, and after a read action finishes, using service 204 `cmd 1016`. The response on service 100 `cmd 1018` replaces the cached count. There is no periodic polling. If an older running GUI still shows a stale badge, reopen it or explicitly refresh Messages. App notifications use a
 separate count and push channel. Check `smartconnectd status` without collecting SMS contents;
 restoring application notification sharing does not guarantee SMS read-state pushes.
 
@@ -716,3 +715,20 @@ Check the mirroring log for audio capture/encoder/output errors. Android 11 requ
 ### PC audio should remain audible with phone media volume at zero
 
 Enable **Independent of phone volume** below **Play phone audio** and restart the scrcpy projection. Android 13+ is required. This selects app-playback capture instead of phone-output capture; adjust scrcpy volume in the PC mixer. The integration does not increase or repeatedly enforce the phone's media volume. If the application excludes playback capture, switch independent mode off to restore the previous output path.
+
+## Computer cannot mark SMS as read
+
+Read permission alone is insufficient on some Motorola builds: the official Smart Connect app also needs the Android `WRITE_SMS` app operation. Its native mark-read command has no failure acknowledgement, so the PC keeps the last confirmed state when the phone rejects the update.
+
+With an authorized ADB connection to the intended phone, inspect and, if you want Smart Connect to update SMS read state, allow the operation:
+
+```sh
+adb -s <authorized-device> shell cmd appops get --user current com.motorola.mobiledesktop WRITE_SMS
+adb -s <authorized-device> shell cmd appops set --user current com.motorola.mobiledesktop WRITE_SMS allow
+```
+
+Then use **Messages → Mark all as read**, or open a conversation. This does not change the default SMS application. The operation permits the official app to modify SMS; restore its previous mode (for example `ignore`) with the same command if desired. Firmware or default-SMS-app changes can reset the mode. The bulk action covers incoming unread messages currently synchronized in the daemon, within the phone protocol’s recent-message window. No state is declared read until it comes back from the phone.
+
+## ADB file transfer after changing Wi-Fi
+
+Connect the paired phone to Smart Connect, then open **Files → ADB file transfer** or press **Refresh devices**. The tool reads the live paired peer address and attempts authorized ADB at that IP, using port 5555 by default or the port in an explicit IP/port entry. An already-open page reacts to peer-address changes; an active job finishes before rediscovery. Discovery never retries uploads/downloads. Network debugging must remain enabled and authorized; TLS wireless-debugging ports may require a manual address or external `adb pair`. There is no subnet scan. USB/manual device choices remain available.
