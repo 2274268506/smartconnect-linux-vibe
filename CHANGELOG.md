@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
+- Add independent scrcpy H.264/H.265/AV1 video codec and optional MediaCodec encoder selection for app streaming and desktop mode, with translated controls and persistent settings.
+
+- Use true fullscreen for app native-fit layouts matching the monitor, including 3:2 width fit at 2880×1920, so KDE panel/work-area limits no longer shrink the viewer.
+
+- Prefer Wi-Fi/LAN over Bluetooth PAN for automatic invitations, discovery caches and control sessions; keep PAN linked for trust/tethering and prevent scrcpy ADB auto-selection from reusing a different TCP endpoint.
+
+- Preserve pre-existing and Classic/PAN-capable Bluetooth connections during BLE wake cleanup, including failed connection attempts; unknown ownership/profile state never triggers a device-wide disconnect.
+
 ## [0.4.0] - 2026-11-25
 
 - Add Files → Gallery with photo-folder navigation, 24-image pages, oriented previews, cancellation and protected original downloads.

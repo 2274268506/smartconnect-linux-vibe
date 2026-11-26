@@ -923,7 +923,7 @@ impl X11 {
         None
     }
 
-    fn app_layout(&self, win:u32, size:(u32,u32), layout:stream_settings::Layout) {
+    fn app_layout(&self, win:u32, size:(u32,u32), layout:stream_settings::Layout, fullscreen: bool) {
         use x11rb::connection::Connection as _;
         use x11rb::protocol::xproto::{ConnectionExt as _,ConfigureWindowAux};
         use x11rb::properties::{WmSizeHints,AspectRatio,WmSizeHintsSpecification};
@@ -938,7 +938,19 @@ impl X11 {
             self.set_borderless(win,true);
             let _=self.conn.configure_window(win,&ConfigureWindowAux::new().width(size.0).height(size.1));
         }
-        let _=hints.set_normal_hints(&self.conn,win);let _=self.conn.flush();
+        let _=hints.set_normal_hints(&self.conn,win);
+        if fullscreen { self.set_fullscreen(win); }
+        let _=self.conn.flush();
+    }
+
+    fn set_fullscreen(&self, win: u32) {
+        use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
+        let atom = |name: &[u8]| self.conn.intern_atom(false, name).ok()?.reply().ok().map(|r| r.atom);
+        let (Some(state), Some(fullscreen)) = (atom(b"_NET_WM_STATE"), atom(b"_NET_WM_STATE_FULLSCREEN")) else { return; };
+        // Request the WM's full monitor area, including space normally reserved for panels.
+        let event = ClientMessageEvent::new(32, win, state, [1, fullscreen, 0, 1, 0]);
+        let _ = self.conn.send_event(false, self.root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, event);
     }
 
     fn set_borderless(&self, win: u32, borderless: bool) {
@@ -1047,7 +1059,7 @@ impl Session {
                 if win != 0 {
                     x.set_title(win, &title, self.renderer!=desktop_renderer::Renderer::Scrcpy);
                     if self.pkg == "desktop" { x.set_borderless(win, borderless); }
-                    if self.layout.fixed {if let Some(size)=self.stream_size(){x.app_layout(win,size,self.layout);}}
+                    if self.layout.fixed {if let Some(size)=self.stream_size(){x.app_layout(win,size,self.layout,self.fullscreen);}}
                     *xw = Some((win, title, borderless));
                 }
             }
@@ -1647,6 +1659,16 @@ impl Host {
                 let scrcpy_options=match desktop_renderer::ScrcpyOptions::from_request(v){Ok(o)=>o,Err(e)=>return json!({"ok":false,"message":e})};
                 let quality=match stream_settings::Quality::from_request(v) {Ok(q)=>q,Err(e)=>return json!({"ok":false,"message":e})};
                 let layout=match stream_settings::Layout::from_request(v) {Ok(l)=>l,Err(e)=>return json!({"ok":false,"message":e})};
+                let fullscreen = match v.get("fullscreen") {
+                    None => false,
+                    Some(value) => match value.as_bool() {
+                        Some(value) => value,
+                        None => return json!({"ok":false,"message":"Fullscreen must be a boolean"}),
+                    },
+                };
+                if fullscreen && (!layout.fixed || layout.fit == stream_settings::FitAxis::Manual) {
+                    return json!({"ok":false,"message":"App fullscreen requires a fixed height/width fit"});
+                }
                 if layout.fixed && !self.borderless_supported() {return json!({"ok":false,"message":"Fixed app aspect ratio needs the default XWayland renderer"});}
                 let display=match app_display::from_request(v) {
                     Ok(display)=>display, Err(error)=>return json!({"ok":false,"message":error}),
@@ -1657,16 +1679,16 @@ impl Host {
                 }
                 if (display.is_some() || quality.custom() || layout.fixed || renderer==desktop_renderer::Renderer::Scrcpy || scrcpy_options.wake_unlock) && views::is_view_pkg(pkg) { return json!({"ok":false,"message":"Use desktop settings for view sessions"}); }
                 if let Some(s) = self.sessions.values().find(|s| s.pkg == pkg && !s.headless) {
-                    if s.requested_display != display || s.quality!=quality || s.layout!=layout || s.renderer!=renderer || s.scrcpy_options!=scrcpy_options { return json!({"ok":false,"message":"Close this app window before changing its stream settings"}); }
+                    if s.requested_display != display || s.quality!=quality || s.layout!=layout || s.fullscreen!=fullscreen || s.renderer!=renderer || s.scrcpy_options!=scrcpy_options { return json!({"ok":false,"message":"Close this app window before changing its stream settings"}); }
                     raise_window(s.title.lock().unwrap().clone());
                 }
                 if self.inflight.as_ref().map(|(r,_)|r).into_iter().chain(self.queue.iter())
-                    .any(|r|r.pkg==pkg && (r.display!=display || r.quality!=quality || r.layout!=layout || r.renderer!=renderer || r.scrcpy_options!=scrcpy_options)) { return json!({"ok":false,"message":"This app is already starting with different display settings"}); }
+                    .any(|r|r.pkg==pkg && (r.display!=display || r.quality!=quality || r.layout!=layout || r.fullscreen!=fullscreen || r.renderer!=renderer || r.scrcpy_options!=scrcpy_options)) { return json!({"ok":false,"message":"This app is already starting with different display settings"}); }
                 if self.wakes.contains_key(pkg) {return json!({"ok":false,"message":"This app is already starting"});}
                 let mut request=start_req_for(pkg, v.get("cmp").and_then(Value::as_str), &self.apps);
                 self.cancelled_starts.remove(pkg);
                 self.app_errors.remove(pkg);
-                request.display=display;request.quality=quality;request.layout=layout;request.renderer=renderer;request.scrcpy_options=scrcpy_options;
+                request.display=display;request.quality=quality;request.layout=layout;request.fullscreen=fullscreen;request.renderer=renderer;request.scrcpy_options=scrcpy_options;
                 let options=request.scrcpy_options.clone();
                 self.prepare_start(pkg,options,PreparedStart::App(request));
                 json!({ "ok": true, "message": "requested" })
@@ -2419,6 +2441,38 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a single-monitor X11/XWayland desktop with an EWMH window manager"]
+    fn matching_app_fit_uses_full_monitor_instead_of_work_area() {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt, AtomEnum, CreateWindowAux, WindowClass};
+        let x = X11::connect().expect("X11 connection");
+        let screen = x.conn.get_geometry(x.root).unwrap().reply().unwrap();
+        let size = (u32::from(screen.width), u32::from(screen.height));
+        let win = x.conn.generate_id().unwrap();
+        x.conn.create_window(0, win, x.root, 0, 0, 640, 480, 0,
+            WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap().check().unwrap();
+        x.set_title(win, "Smart Connect native-fit test", true);
+        x.conn.map_window(win).unwrap().check().unwrap();
+        x.app_layout(win, size, stream_settings::Layout {
+            fixed: true, fit: stream_settings::FitAxis::Width, ..Default::default()
+        }, true);
+        let atom = |name: &[u8]| x.conn.intern_atom(false, name).unwrap().reply().unwrap().atom;
+        let state = atom(b"_NET_WM_STATE");
+        let fullscreen = atom(b"_NET_WM_STATE_FULLSCREEN");
+        let mut matched = false;
+        for _ in 0..50 {
+            let flags = x.conn.get_property(false, win, state, AtomEnum::ATOM, 0, 32).unwrap().reply().unwrap();
+            if flags.value32().is_some_and(|mut v| v.any(|a| a == fullscreen)) && x.window_size(win) == Some(size) {
+                matched = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        x.conn.destroy_window(win).unwrap().check().unwrap();
+        assert!(matched, "native fit must have both fullscreen state and full-monitor geometry");
+    }
+
+    #[test]
     #[ignore="requires an X11/XWayland desktop session"]
     fn unicode_titles_preserve_utf8_in_both_x11_properties() {
         use x11rb::connection::Connection;
@@ -2507,6 +2561,27 @@ mod tests {
         host.inflight=None;host.pump();let out=sent(&theirs);let data=&out[0].1["data"];
         assert_eq!(data["supportCustomDisplay"],false);assert_eq!(data["width"],1920);
         assert_eq!(data["displayDensity"],160);
+    }
+
+    #[test]
+    #[ignore = "requires an X11/XWayland desktop and glimagesink for native app layout"]
+    fn app_fullscreen_is_validated_and_preserved_in_the_queue() {
+        gst::init().unwrap();
+        let (mut host, theirs) = test_host(true);
+        host.x11 = Some(X11::connect().expect("X11 connection"));
+        assert_eq!(host.on_ctl(&json!({"cmd":"app","pkg":"com.example.test","fullscreen":"yes"}))["ok"], false);
+        assert_eq!(host.on_ctl(&json!({"cmd":"app","pkg":"com.example.test","fullscreen":true}))["ok"], false);
+        for renderer in ["builtin", "scrcpy"] {
+            let mut request = json!({"cmd":"app","pkg":"com.example.test","renderer":renderer,
+                "width":2880,"height":1920,"fullscreen":true,
+                "layout":{"fixed":true,"ratioWidth":3,"ratioHeight":2,"fit":"width"}});
+            assert_eq!(host.on_ctl(&request)["ok"], true);
+            assert!(host.inflight.as_ref().unwrap().0.fullscreen);
+            request["fullscreen"] = json!(false);
+            assert_eq!(host.on_ctl(&request)["ok"], false);
+            host.inflight = None;
+        }
+        let _ = sent(&theirs);
     }
 
     #[test]

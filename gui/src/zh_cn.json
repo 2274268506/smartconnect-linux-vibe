@@ -471,5 +471,9 @@
   "Unsupported image": "不支持的图片",
   "Download original…": "下载原图…",
   "Some images could not be previewed.": "部分图片无法预览。",
-  "Quit and reopen the app to apply the selected language": "退出并重新打开应用以使用所选语言"
+  "Quit and reopen the app to apply the selected language": "退出并重新打开应用以使用所选语言",
+  "Video codec": "视频编码",
+  "Applies after restarting the stream. Codec support depends on the phone and computer.": "重开投屏后生效，编码支持取决于手机和电脑。",
+  "Video encoder (empty for automatic)": "视频编码器（留空自动选择）",
+  "Optional phone MediaCodec encoder name for the selected codec. Use scrcpy --list-encoders to list available encoders.": "可选：填写所选编码对应的手机 MediaCodec 编码器名称。使用 scrcpy --list-encoders 查看可用编码器。"
 }

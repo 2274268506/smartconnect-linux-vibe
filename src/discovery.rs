@@ -332,7 +332,7 @@ pub async fn watch_phones(daemon: Arc<Daemon>) -> Result<()> {
         let Some((addr, txt_device_id)) = parse_resolved(&line) else { continue };
         let Ok(nonce) = B64.decode(&txt_device_id) else { continue };
         let Some((phone, _)) = phone_for_nonce(&daemon, &nonce) else { continue };
-        daemon.remember_phone_mdns(&phone, addr);
+        if !daemon.remember_phone_mdns(&phone, addr) {continue;}
         if !daemon.should_dial_back() {
             info!(%addr, %phone, "mdns: phone is advertising but just disconnected or is connected; not dialing");
             continue;

@@ -107,3 +107,40 @@ pub fn spin(title: &str, min: f64, max: f64, value: u32, step: f64) -> adw::Spin
         .numeric(true)
         .build()
 }
+
+/// Shared scrcpy-only encoding controls; app and desktop persist their own options.
+pub struct EncodingRows {
+    codec: adw::ComboRow,
+    encoder: adw::EntryRow,
+}
+impl EncodingRows {
+    pub fn new(options: &crate::desktop_renderer::ScrcpyOptions) -> Self {
+        use crate::desktop_renderer::VideoCodec;
+        let codec = adw::ComboRow::builder().title(tr("Video codec"))
+            .subtitle(tr("Applies after restarting the stream. Codec support depends on the phone and computer."))
+            .model(&gtk::StringList::new(&["H.264", "H.265 (HEVC)", "AV1"]))
+            .selected(match options.video_codec { VideoCodec::H264 => 0, VideoCodec::H265 => 1, VideoCodec::Av1 => 2 }).build();
+        let encoder = adw::EntryRow::builder().title(tr("Video encoder (empty for automatic)"))
+            .text(&options.video_encoder).build();
+        encoder.set_tooltip_text(Some(tr("Optional phone MediaCodec encoder name for the selected codec. Use scrcpy --list-encoders to list available encoders.")));
+        Self { codec, encoder }
+    }
+    pub fn add_to(&self, group: &adw::PreferencesGroup) { group.add(&self.codec); group.add(&self.encoder); }
+    pub fn selection(&self) -> (crate::desktop_renderer::VideoCodec, String) {
+        use crate::desktop_renderer::VideoCodec;
+        (match self.codec.selected() { 1 => VideoCodec::H265, 2 => VideoCodec::Av1, _ => VideoCodec::H264 }, self.encoder.text().trim().into())
+    }
+    pub fn refresh(&self, visible: bool, sensitive: bool) {
+        self.codec.set_visible(visible); self.encoder.set_visible(visible);
+        self.codec.set_sensitive(sensitive); self.encoder.set_sensitive(sensitive);
+    }
+    pub fn connect_changed(&self, action: impl Fn() + 'static) {
+        let action = Rc::new(action); let codec_action = action.clone();
+        self.codec.connect_selected_notify(move |_| codec_action());
+        self.encoder.connect_changed(move |_| action());
+    }
+    #[cfg(test)]
+    pub fn set_selection(&self, codec: u32, encoder: &str) {
+        self.codec.set_selected(codec); self.encoder.set_text(encoder);
+    }
+}

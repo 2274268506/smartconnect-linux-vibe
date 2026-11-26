@@ -193,7 +193,7 @@ pub fn cancel_start(pkg: &str, control: Option<&StartControl>) -> Result<String,
     reply_result(host_call(&json!({"cmd":"cancel","pkg":pkg})))
 }
 
-fn launch(pkg: &str, cmp: Option<&str>, settings: prefs::AppStreamingPrefs, control: &StartControl) -> Result<String, String> {
+fn launch(pkg: &str, cmp: Option<&str>, settings: prefs::AppStreamingPrefs, fullscreen: bool, control: &StartControl) -> Result<String, String> {
     let _guard=control.gate.lock().unwrap();
     if control.cancelled() {return Ok(String::new());}
     ensure_host()?;
@@ -228,7 +228,7 @@ fn launch(pkg: &str, cmp: Option<&str>, settings: prefs::AppStreamingPrefs, cont
     if settings.renderer==crate::desktop_renderer::Renderer::Scrcpy && host_call(&json!({"cmd":"capabilities"})).is_none_or(|caps|caps["appScrcpy"]!=true){
         return Err(tr("Update or restart the stream host to use scrcpy app streaming").into());
     }
-    let mut req = json!({ "cmd": "app", "pkg": pkg, "quality":settings.quality,"layout":settings.layout,"renderer":settings.renderer,"scrcpy":settings.scrcpy });
+    let mut req = json!({ "cmd": "app", "pkg": pkg, "quality":settings.quality,"layout":settings.layout,"renderer":settings.renderer,"scrcpy":settings.scrcpy,"fullscreen":fullscreen });
     if let Some(cmp) = cmp {
         req["cmp"] = json!(cmp);
     }
@@ -879,8 +879,10 @@ impl AppsPage {
         button.set_sensitive(false);
         let (pkg, cmp, name) = (app.pkg.clone(), app.cmp.clone(), app.name.clone());
         let mut settings=prefs::load().apps.streaming.sanitized();
+        let screen = crate::mobile_desktop::native_monitor_size(button);
+        let fullscreen = screen.is_some_and(|screen| settings.layout.fills_monitor(screen));
         if settings.layout.fixed && settings.layout.fit!=crate::stream_settings::FitAxis::Manual {
-            let Some(size)=crate::mobile_desktop::native_monitor_size(button).and_then(|screen|settings.layout.fitted(screen)) else {
+            let Some(size)=screen.and_then(|screen|settings.layout.fitted(screen)) else {
                 self.toast(tr("Could not determine the monitor's physical resolution"));button.set_sensitive(true);return;
             };
             settings.display.width=size.0;settings.display.height=size.1;
@@ -895,7 +897,7 @@ impl AppsPage {
         let button = button.downgrade();
         glib::spawn_future_local(async move {
             let target=pkg.clone();let worker_control=control.clone();
-            let result = gio::spawn_blocking(move || launch(&target, cmp.as_deref(),settings,&worker_control))
+            let result = gio::spawn_blocking(move || launch(&target, cmp.as_deref(),settings,fullscreen,&worker_control))
                 .await
                 .unwrap_or_else(|_| Err("launch thread failed".into()));
             if let Some(b) = button.upgrade() {
@@ -1072,7 +1074,7 @@ mod tests {
     #[test]
     fn cancelled_start_returns_without_starting_a_host_or_sending_a_request() {
         let control=StartControl::default();control.cancel();
-        assert_eq!(launch("com.example.notes",None,Default::default(),&control),Ok(String::new()));
+        assert_eq!(launch("com.example.notes",None,Default::default(),false,&control),Ok(String::new()));
         assert_eq!(start_desktop(Default::default(),false,&control),Ok(String::new()));
         assert_eq!(start_mirror(&control),Ok(String::new()));
     }

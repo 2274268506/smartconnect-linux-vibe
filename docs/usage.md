@@ -481,7 +481,7 @@ Settings are stored in `gui.json` under `apps.streaming`, independently of app r
 
 Open **Apps → Streaming settings → Display method → scrcpy (ADB)**, configure its ADB device/port if needed, save, then launch an app. Existing windows keep their backend until closed. App and desktop ADB/quality settings are saved separately. The same [scrcpy/ADB installation and phone authorization](#desktop-mode-with-scrcpy) are required.
 
-Custom resolution/DPI and fixed aspect ratio still configure the phone's app display. Height/width fit computes native source pixels from the monitor; the scrcpy window receives matching size/aspect hints and borderless geometry on X11/XWayland. Manual fit remains a resizable window. Bitrate and FPS are passed to scrcpy's encoder/capture flags; actual rates depend on the phone.
+Custom resolution/DPI and fixed aspect ratio still configure the phone's app display. Height/width fit computes native source pixels from the monitor; the scrcpy window receives matching size/aspect hints and borderless geometry on X11/XWayland. When the fitted resolution matches the monitor (for example 3:2 at 2880×1920), the viewer starts in true fullscreen so KDE panels cannot shrink it. Manual fit remains a resizable window. Bitrate and FPS are passed to scrcpy's encoder/capture flags; actual rates depend on the phone.
 
 The host keeps the Smart Connect app session alive and captures its existing display, without a duplicate built-in window. Closing the viewer or stopping the app releases both captures. Startup failures appear on the Apps page and in **Mirroring logs**, independently of desktop errors. Each scrcpy stream retains the Smart Connect capture plus an ADB capture; simultaneous streams can exhaust phone encoder resources. Stop unused streams if a new viewer cannot start.
 
@@ -498,7 +498,7 @@ side exceeds the app encoder bounds, Save is disabled; choose another ratio/axis
 The other side can extend beyond the screen when the ratio differs from the monitor.
 
 Fixed-ratio windows use X11/XWayland aspect hints. Native fit also removes window decorations
-and requests a client area matching the video pixels. It needs the default XWayland renderer;
+and requests a client area matching the video pixels. A fit matching both monitor dimensions uses true fullscreen (scrcpy and built-in), covering panel/work-area reservations; other ratios retain the chosen native axis and may leave space or extend beyond the monitor. It needs the default XWayland renderer;
 compositor scaling, window-management rules and phone encoder limitations can affect the result.
 The phone's accepted size remains visible in the running-app row. Reopen the app after saving.
 Fit dimensions are recalculated on launch for the monitor containing the app button.
@@ -1484,3 +1484,23 @@ The SMS reply dialog keeps one explicit **Close** button; automatic title-bar co
 Gallery performance: each page batches up to 24 thumbnails into one phone-side process. Recently visited thumbnails are reused from RAM for up to 30 seconds (96 entries / 8 MiB maximum). **Refresh devices** clears the thumbnail cache as well as rediscovering devices; use it after replacing a photo at the same path. Paired-peer changes invalidate the cache. No disk photo cache is created, and full previews/original downloads are requested fresh.
 
 The home SMS/MMS badge uses a phone-reported counter. To avoid a stale unread badge after the phone has read a message, the GUI requests fresh unread metadata on connection, Messages open/refresh and read-action completion. This is a one-shot metadata request; it does not mark anything read or introduce periodic polling. Conversation refresh includes both SMS and MMS.
+
+## Persistent Bluetooth PAN alongside Smart Connect
+
+Smart Connect uses Bluetooth LE to send a reconnect invitation; Wi-Fi/LAN carries the session. A Bluetooth PAN connection for tethering or phone trust is managed separately by NetworkManager. BLE cleanup preserves pre-existing links and devices exposing Classic PAN/audio profiles, and retains links if ownership/profile information cannot be verified. Only a newly established, known LE-only connection may be disconnected on completion or failure. `--no-ble` disables the legacy pairing peripheral, whereas `--no-ble-wake` separately disables reconnect invitations.
+
+For a user-chosen existing PAN profile, keep phone-side Bluetooth tethering enabled and set automatic retries and route policy without bouncing the active connection:
+
+```sh
+nmcli connection modify uuid <PAN-profile-UUID> connection.autoconnect yes connection.autoconnect-retries 0 ipv4.never-default yes ipv6.never-default yes
+```
+
+NetworkManager’s zero retry count means continuous autoactivation retries, with its own scheduling/backoff. It cannot establish PAN while the phone’s NAP service is off. The project does not create or force reconnect a PAN profile. Check the specific NM Bluetooth device/profile and its IP interface; a generic `bluetoothctl connect` may attempt unrelated audio profiles. A link ping alone does not establish PAN or confirm Android trust status.
+
+When a normal LAN is available, automatic Smart Connect invitations advertise Wi-Fi first and omit Bluetooth PAN addresses. USB cable addresses remain available for cable mode. PAN is still kept connected for tethering/trust; it is a data fallback only if no normal LAN is available, or when explicitly selected with `--ip`. New control sessions on an unadvertised PAN interface are redirected through reconnect using the selected LAN policy. Phone endpoint caches/discovery cannot overwrite the LAN endpoint with a PAN address. The reported phoneAddress remains the actual session peer, so ADB file tools and app/desktop streaming follow the corrected connection. Scrcpy’s automatic ADB selection also ignores unrelated TCP endpoints instead of silently choosing a lone PAN target; explicit ADB/USB choices remain supported.
+
+### scrcpy video encoding
+
+App streaming settings and Desktop mode each offer **Video codec** (H.264, H.265/HEVC or AV1) and **Video encoder (empty for automatic)** when scrcpy is selected. They are saved independently and apply after restarting that stream. Existing configurations retain H.264 and the phone’s automatic encoder.
+
+To choose a particular phone encoder, run `scrcpy -s <adb-device> --list-encoders`, copy the MediaCodec name matching the chosen codec, and enter it exactly (for example `c2.vendor.avc.encoder`). Leave it empty for automatic selection. Codec/encoder availability depends on the phone, scrcpy and PC decoder; unsupported combinations surface in Mirroring logs. The built-in Smart Connect capture keeps its own negotiated codec. See [scrcpy video documentation](https://github.com/Genymobile/scrcpy/blob/master/doc/video.md#codec).

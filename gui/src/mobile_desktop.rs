@@ -22,6 +22,7 @@ pub struct DesktopPage {
     adb_device: adw::EntryRow,
     adb_port: adw::SpinRow,
     software_decode: adw::SwitchRow,
+    encoding: crate::stream_controls::EncodingRows,
     audio: adw::SwitchRow,
     independent_audio: adw::SwitchRow,
     wake_unlock: adw::SwitchRow,
@@ -94,6 +95,7 @@ impl DesktopPage {
             .text(&settings.scrcpy.adb_device).show_apply_button(true).build();
         let adb_port=crate::stream_controls::spin(tr("Wireless ADB port"),1.,65535.,u32::from(settings.scrcpy.adb_port),1.);
         adb_port.set_subtitle(tr("Used when automatically connecting to the paired phone"));
+        let encoding = crate::stream_controls::EncodingRows::new(&settings.scrcpy);
         let software_decode=adw::SwitchRow::builder().title(tr("Software decoding for scrcpy"))
             .subtitle(tr("Enable if hardware decoding causes a crash or black screen"))
             .active(settings.scrcpy.software_decode).build();
@@ -119,7 +121,7 @@ impl DesktopPage {
             .active(settings.scrcpy.phone_ime).build();
         let method=adw::PreferencesGroup::builder().title(tr("Display method"))
             .description(tr("Install scrcpy and adb first. Wireless ADB must already be enabled and authorized on the phone.")).build();
-        method.add(&renderer);method.add(&adb_device);method.add(&adb_port);method.add(&software_decode);method.add(&audio);method.add(&independent_audio);method.add(&wake_unlock);method.add(&fold_mouse);method.add(&mouse_speed);method.add(&phone_ime);method.add(&computer_ime);
+        method.add(&renderer);method.add(&adb_device);method.add(&adb_port);method.add(&software_decode);encoding.add_to(&method);method.add(&audio);method.add(&independent_audio);method.add(&wake_unlock);method.add(&fold_mouse);method.add(&mouse_speed);method.add(&phone_ime);method.add(&computer_ime);
         let resolution = adw::ComboRow::builder()
             .title(tr("Desktop resolution"))
             .model(&gtk::StringList::new(&[
@@ -210,7 +212,7 @@ impl DesktopPage {
             .child(&clamp)
             .build();
         let page = Rc::new(Self {
-            renderer,adb_device,adb_port,software_decode,audio,independent_audio,wake_unlock,fold_mouse,mouse_speed,phone_ime,computer_ime,
+            renderer,adb_device,adb_port,software_decode,encoding,audio,independent_audio,wake_unlock,fold_mouse,mouse_speed,phone_ime,computer_ime,
             quality,
             resolution,
             scale,
@@ -245,6 +247,7 @@ impl DesktopPage {
         let weak=Rc::downgrade(&page);page.phone_ime.connect_active_notify(move |_|{if let Some(page)=weak.upgrade(){page.selection_changed();}});
         let weak=Rc::downgrade(&page);page.fold_mouse.connect_active_notify(move |_|{if let Some(page)=weak.upgrade(){page.selection_changed();}});
         let weak=Rc::downgrade(&page);page.wake_unlock.connect_active_notify(move |_|{if let Some(page)=weak.upgrade(){page.selection_changed();}});
+        let weak=Rc::downgrade(&page);page.encoding.connect_changed(move || {if let Some(page)=weak.upgrade(){page.selection_changed();}});
         let weak=Rc::downgrade(&page);page.software_decode.connect_active_notify(move |_|{if let Some(page)=weak.upgrade(){page.selection_changed();}});
         let weak = Rc::downgrade(&page);
         page.resolution.connect_selected_notify(move |_| {
@@ -315,7 +318,7 @@ impl DesktopPage {
             )
         };
         settings.renderer=if self.renderer.selected()==1{crate::desktop_renderer::Renderer::Scrcpy}else{crate::desktop_renderer::Renderer::Builtin};
-        settings.scrcpy=crate::desktop_renderer::ScrcpyOptions{adb_device:self.adb_device.text().trim().into(),adb_port:self.adb_port.value() as u16,software_decode:self.software_decode.is_active(),audio:self.audio.is_active(),independent_audio:self.independent_audio.is_active(),wake_unlock:self.wake_unlock.is_active(),fold_mouse:self.fold_mouse.is_active(),mouse_speed_percent:self.mouse_speed.value() as u16,phone_ime:self.phone_ime.is_active(),computer_ime:self.computer_ime.is_active()};
+        settings.scrcpy=crate::desktop_renderer::ScrcpyOptions{adb_device:self.adb_device.text().trim().into(),adb_port:self.adb_port.value() as u16,software_decode:self.software_decode.is_active(),video_codec:self.encoding.selection().0,video_encoder:self.encoding.selection().1,audio:self.audio.is_active(),independent_audio:self.independent_audio.is_active(),wake_unlock:self.wake_unlock.is_active(),fold_mouse:self.fold_mouse.is_active(),mouse_speed_percent:self.mouse_speed.value() as u16,phone_ime:self.phone_ime.is_active(),computer_ime:self.computer_ime.is_active()};
         settings.quality = self.quality.selection();
         settings.borderless = self.borderless.is_active();
         settings.scale_percent = self.scale.selected().checked_sub(1).and_then(|index| SCALES.get(index as usize).copied());
@@ -572,6 +575,7 @@ impl DesktopPage {
         self.renderer.set_sensitive(!waiting);
         let external=settings.renderer==crate::desktop_renderer::Renderer::Scrcpy;
         self.renderer.set_subtitle(tr(if external&&settings.follow_computer{"Desktop fills the screen when following computer resolution"}else{"scrcpy uses authorized ADB and keeps the complete phone desktop"}));
+        self.encoding.refresh(external, !waiting);
         self.adb_device.set_visible(external||settings.scrcpy.wake_unlock);self.adb_port.set_visible(external||settings.scrcpy.wake_unlock);self.software_decode.set_visible(external);self.fold_mouse.set_visible(external);
         self.audio.set_visible(external);self.audio.set_sensitive(!waiting);
         self.independent_audio.set_visible(external);self.independent_audio.set_sensitive(!waiting && self.audio.is_active());
@@ -776,11 +780,14 @@ mod tests {
         automatic.adb_device.set_text("unit-device");automatic.adb_port.set_value(5557.);automatic.software_decode.set_active(true);
         assert!(automatic.fold_mouse.is_active());assert!(automatic.phone_ime.is_active());
         assert!(automatic.audio.is_active());assert!(!automatic.independent_audio.is_active());
+        automatic.encoding.set_selection(2,"c2.vendor.av1.encoder");
         automatic.independent_audio.set_active(true);automatic.audio.set_active(false);assert!(!automatic.independent_audio.is_sensitive());
         automatic.computer_ime.set_active(true);assert!(!automatic.phone_ime.is_sensitive());
         automatic.mouse_speed.set_value(250.);automatic.phone_ime.set_active(false);
         automatic.fold_mouse.set_active(false);assert!(!automatic.mouse_speed.is_sensitive());
         let saved=prefs::load().desktop;assert_eq!(saved.renderer,crate::desktop_renderer::Renderer::Scrcpy);
+        assert_eq!(saved.scrcpy.video_codec,crate::desktop_renderer::VideoCodec::Av1);
+        assert_eq!(saved.scrcpy.video_encoder,"c2.vendor.av1.encoder");
         assert_eq!(saved.scrcpy.adb_port,5557);assert_eq!(saved.scrcpy.adb_device,"unit-device");assert!(saved.scrcpy.software_decode);assert!(!saved.scrcpy.fold_mouse);
         assert_eq!(saved.scrcpy.mouse_speed_percent,250);assert!(!saved.scrcpy.phone_ime);assert!(saved.scrcpy.computer_ime);assert!(!saved.scrcpy.audio);assert!(saved.scrcpy.independent_audio);
         automatic.adb_device.set_text("invalid device");assert!(!automatic.selection().valid());assert_eq!(prefs::load().desktop,saved);

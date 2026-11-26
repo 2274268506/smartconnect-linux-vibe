@@ -530,5 +530,9 @@
   "Unsupported image": "Imagen no compatible",
   "Download original…": "Descargar original…",
   "Some images could not be previewed.": "No se pudo previsualizar algunas imágenes.",
-  "Quit and reopen the app to apply the selected language": "Sal y vuelve a abrir la aplicación para aplicar el idioma seleccionado"
+  "Quit and reopen the app to apply the selected language": "Sal y vuelve a abrir la aplicación para aplicar el idioma seleccionado",
+  "Video codec": "Códec de vídeo",
+  "Applies after restarting the stream. Codec support depends on the phone and computer.": "Se aplica al reiniciar la transmisión. La compatibilidad depende del teléfono y del ordenador.",
+  "Video encoder (empty for automatic)": "Codificador de vídeo (vacío para automático)",
+  "Optional phone MediaCodec encoder name for the selected codec. Use scrcpy --list-encoders to list available encoders.": "Nombre opcional del codificador MediaCodec del teléfono para el códec elegido. Use scrcpy --list-encoders para ver los codificadores disponibles."
 }

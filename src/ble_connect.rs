@@ -7,7 +7,7 @@
 //! notifications on 0x0726, and writes ONE discovery frame — the same AES-GCM-sealed `cmd:1` invite
 //! used on `/readyfor/mdns` — to characteristic 0x0722. The phone then dials our control WebSocket.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use std::sync::Arc;
 
@@ -45,8 +45,9 @@ pub async fn connect(daemon: &Daemon) -> Result<String> {
         let (address, phone) = scan_for_phone(daemon, &adapter).await?;
         info!(%address, %phone, round, "ble: found the paired phone; connecting");
         let device = adapter.device(address)?;
-        match connect_device(&device).await {
-            Ok(()) => return wake(daemon, &device, &phone).await,
+        let initially_connected = device.is_connected().await.ok();
+        match connect_device(&device, initially_connected).await {
+            Ok(()) => return wake(daemon, &device, &phone, initially_connected).await,
             Err(e) => {
                 warn!(round, "ble: {e:#}");
                 last_err = Some(e);
@@ -93,35 +94,58 @@ async fn scan_for_phone(daemon: &Daemon, adapter: &bluer::Adapter) -> Result<(bl
     Ok((address, phone))
 }
 
+/// Classic service classes include PAN/NAP and audio. Device1.Disconnect tears them all down.
+fn classic_service(uuid: &Uuid) -> bool {
+    let (short, middle, version, suffix) = uuid.as_fields();
+    middle == 0 && version == 0x1000 && suffix == &[0x80,0x00,0x00,0x80,0x5f,0x9b,0x34,0xfb]
+        && (0x1100..=0x13ff).contains(&short)
+}
+fn may_release_temporary_link(initially_connected: Option<bool>, services: Option<&HashSet<Uuid>>) -> bool {
+    initially_connected == Some(false)
+        && services.is_some_and(|services| !services.is_empty() && !services.iter().any(classic_service))
+}
+async fn release_temporary_link(device: &bluer::Device, initially_connected: Option<bool>) {
+    // Failure to read ownership/profile metadata must never disconnect someone else's connection.
+    if initially_connected != Some(false) {
+        debug!("ble: preserving a pre-existing or unverified Bluetooth connection");
+        return;
+    }
+    let services = timeout(Duration::from_secs(3), device.uuids()).await.ok().and_then(|value| value.ok()).flatten();
+    if may_release_temporary_link(initially_connected, services.as_ref()) {
+        let _ = timeout(Duration::from_secs(3), device.disconnect()).await;
+    } else {
+        debug!("ble: preserving an existing, shared-profile or unknown Bluetooth connection");
+    }
+}
+
 /// LE-connects to the phone: two tries, a second apart (BlueZ may still be winding the scan down).
-async fn connect_device(device: &bluer::Device) -> Result<()> {
+async fn connect_device(device: &bluer::Device, initially_connected: Option<bool>) -> Result<()> {
     for attempt in 1..=2 {
         match timeout(Duration::from_secs(12), device.connect()).await {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => warn!(attempt, "ble: connect failed: {e}"),
             Err(_) => warn!(attempt, "ble: connect timed out"),
         }
-        // Dropping the call doesn't stop BlueZ: its LE connect stays pending ("Operation already in
-        // progress" on the next try) and stalls scanning. Disconnect cancels it.
-        let _ = device.disconnect().await;
+        // Cancel only an owned, known LE-only attempt. Device1.Disconnect affects every profile.
+        release_temporary_link(device, initially_connected).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     bail!("couldn't connect to the phone over Bluetooth")
 }
 
-/// Writes the sealed invite, waits briefly for the phone to dial in over Wi-Fi, drops the LE link.
-async fn wake(daemon: &Daemon, device: &bluer::Device, phone: &str) -> Result<String> {
+/// Writes the invite and waits for Wi-Fi; preserves shared/pre-existing Bluetooth connections.
+async fn wake(daemon: &Daemon, device: &bluer::Device, phone: &str, initially_connected: Option<bool>) -> Result<String> {
     let key = daemon.pairing.lock().unwrap().get(phone).map(|p| p.key.clone()).context("phone not paired")?;
     let frame = discovery::sealed_invite(daemon, &key)?;
     let result = write_invite(device, &frame).await;
-    // Give the phone a moment to dial us over Wi-Fi, then drop the LE link (Windows idles ~60 s; we don't need to).
+    // Allow dial-back before releasing only an owned, known LE-only link.
     if result.is_ok() {
         let until = Instant::now() + Duration::from_secs(8);
         while Instant::now() < until && !daemon.is_connected() {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
-    let _ = device.disconnect().await;
+    release_temporary_link(device, initially_connected).await;
     result?;
     Ok(if daemon.is_connected() {
         "connected (woke the phone over Bluetooth)".into()
@@ -201,4 +225,26 @@ async fn write_invite(device: &bluer::Device, frame: &[u8]) -> Result<()> {
     invite_chr.write(frame).await.context("writing the invite to 0x0722")?;
     info!(bytes = frame.len(), "ble: invite written to the phone");
     Ok(())
+}
+
+#[cfg(test)]
+mod connection_ownership_tests {
+    use super::*;
+    #[test]
+    fn cleanup_never_disconnects_existing_unknown_or_classic_connections() {
+        let le=HashSet::from([SVC_READYFOR,uuid16(0x1800)]);
+        assert!(!may_release_temporary_link(Some(true),Some(&le)));
+        assert!(!may_release_temporary_link(None,Some(&le)));
+        assert!(!may_release_temporary_link(Some(false),None));
+        assert!(!may_release_temporary_link(Some(false),Some(&HashSet::new())));
+        for profile in [0x1115,0x1116,0x1117,0x110a,0x1200] {
+            let shared=HashSet::from([SVC_READYFOR,uuid16(profile)]);
+            assert!(!may_release_temporary_link(Some(false),Some(&shared)));
+        }
+    }
+    #[test]
+    fn cleanup_only_releases_owned_known_le_links() {
+        let le=HashSet::from([SVC_READYFOR,uuid16(0x1800),uuid16(0x1801)]);
+        assert!(may_release_temporary_link(Some(false),Some(&le)));
+    }
 }

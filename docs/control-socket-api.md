@@ -569,7 +569,7 @@ scrcpy settings fail before phone commands. A backend/options change requires st
 app/desktop, like geometry/quality changes. `desktop_window` cannot change a running scrcpy window's
 decorations; restart instead.
 
-`desktop` additionally accepts `fullscreen:true` (boolean; default false), forwarded to scrcpy only. The GUI requests it when following the PC resolution. Sessions report `fullscreen`. App height/width fit passes matching native window dimensions and applies X11 aspect/size hints to the owned child; ordinary app windows are not fullscreen.
+`desktop` additionally accepts `fullscreen:true` (boolean; default false), forwarded to scrcpy only. The GUI requests it when following the PC resolution. Sessions report `fullscreen`. `app` also accepts boolean `fullscreen` (default false), requiring a fixed height/width fit. The GUI sets it when the fitted physical resolution matches the monitor. scrcpy receives `--fullscreen`; the built-in viewer requests EWMH fullscreen. App height/width fit otherwise passes native window dimensions and X11 aspect/size hints to the owned child; manual windows stay windowed. A different fullscreen choice requires closing an existing/pending app first.
 
 Starting is asynchronous. Session entries add `renderer`, `requestedScrcpy`, `scrcpyState`
 (`preparing`, `starting`, `running`; null for built-in), and `scrcpyPid` (null before spawn).
@@ -685,3 +685,5 @@ Hosts advertise `scrcpyAudio:true`. `scrcpy.audio` is a boolean (default true), 
 Requires a connected phone. Queues the existing mark-read command for every incoming unread SMS/MMS currently in the daemon cache, preserving each message kind. Example: `{"cmd":"sms_mark_all_read"}` → `{"ok":true,"message":"read requests queued","count":2}`. The count describes queued requests; it is not phone confirmation. Watch subsequent cached message `read` flags. Outgoing and already-read messages are excluded.
 
 Explicit `sms_threads`/`sms_thread` sync now requests both SMS and MMS. The GUI separately refreshes the home unread metadata using `send` with service 204 `{ver:"5.0", cmd:1016, pId:110}` once per connection edge, Messages open/refresh and completed read attempt. The phone’s service-100 cmd-1018 response updates status; cache-only reads themselves still emit no phone requests. No timer polling is added.
+
+Scrcpy options also accept `videoCodec:"h264"|"h265"|"av1"` (default `h264`) and `videoEncoder:""` (automatic). A nonempty encoder is a MediaCodec name of at most 255 ASCII letters/digits, dots, underscores or hyphens. Invalid codecs/names are rejected before starting. These become individual `--video-codec=` / `--video-encoder=` arguments for the owned scrcpy child; encoder support errors are reported through the existing stream error/log path. App and desktop profiles stay independent.

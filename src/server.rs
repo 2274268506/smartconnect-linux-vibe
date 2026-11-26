@@ -107,8 +107,13 @@ impl Daemon {
     ) -> Self {
         // Last known /readyfor/mdns endpoint per phone, kept across restarts.
         let endpoints_path = session_dir.with_file_name("phone-endpoints.json");
-        let endpoints: HashMap<String, SocketAddr> =
+        let mut endpoints: HashMap<String, SocketAddr> =
             std::fs::read(&endpoints_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let before=endpoints.len();
+        endpoints.retain(|_,addr|crate::reconnect::pan_peer_allowed(addr.ip(),&ips));
+        if endpoints.len()!=before {
+            if let Ok(json)=serde_json::to_vec_pretty(&endpoints){let _=crate::identity::write_private(&endpoints_path,&json);}
+        }
         let status = StatusHub::new(!pairing.is_empty(), Some(qr.svg_path.display().to_string()));
         let phone_ip = endpoints.values().next().map(SocketAddr::ip);
         Self {
@@ -252,6 +257,10 @@ impl Daemon {
         info!(old = ?*cur, new = ?ips, "LAN addresses changed");
         *cur = ips;
         drop(cur);
+        if self.is_connected() && !crate::reconnect::session_interface_allowed(self.status.session_local_ip(),&self.ips()) {
+            // Migrate only the application socket; the NetworkManager PAN link stays connected.
+            self.kick.notify_waiters();
+        }
         if !self.is_connected() {
             *self.invite.lock().unwrap() = None;
         }
@@ -268,7 +277,7 @@ impl Daemon {
 
     /// The paired phone's last known LAN address.
     pub fn phone_ip(&self) -> Option<IpAddr> {
-        *self.phone_ip.lock().unwrap()
+        self.phone_ip.lock().unwrap().filter(|ip|crate::reconnect::pan_peer_allowed(*ip,&self.ips()))
     }
 
     /// Records where the phone was last seen. A remembered `/readyfor/mdns` endpoint on another
@@ -277,6 +286,7 @@ impl Daemon {
     /// A cable (USB tethering) address is not remembered: the phone's `/readyfor/mdns` server
     /// listens on Wi-Fi only (OBSERVED: refused on the cable address while the app was open).
     pub fn remember_phone_ip(&self, phone: &str, ip: IpAddr) {
+        if !crate::reconnect::pan_peer_allowed(ip,&self.ips()){return;}
         if recent_cable_peer(&self.cable_peers.lock().unwrap(),ip,Instant::now()) {
             return;
         }
@@ -303,10 +313,11 @@ impl Daemon {
     }
 
     pub fn known_phone_endpoints(&self) -> Vec<(String, SocketAddr)> {
-        self.phone_mdns.lock().unwrap().iter().map(|(p, a)| (p.clone(), *a)).collect()
+        self.phone_mdns.lock().unwrap().iter().filter(|(_,addr)|crate::reconnect::pan_peer_allowed(addr.ip(),&self.ips())).map(|(p, a)| (p.clone(), *a)).collect()
     }
 
-    pub fn remember_phone_mdns(&self, phone: &str, addr: SocketAddr) {
+    pub fn remember_phone_mdns(&self, phone: &str, addr: SocketAddr) -> bool {
+        if !crate::reconnect::pan_peer_allowed(addr.ip(),&self.ips()){return false;}
         *self.phone_ip.lock().unwrap() = Some(addr.ip());
         let mut map = self.phone_mdns.lock().unwrap();
         if map.insert(phone.to_owned(), addr) != Some(addr) {
@@ -314,6 +325,7 @@ impl Daemon {
                 let _ = crate::identity::write_private(&self.endpoints_path, &json);
             }
         }
+        true
     }
 
     /// A token valid for at least a minute, for discovery invites (the phone sends it back in its hello).
@@ -455,6 +467,13 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     // Accept a fresh pair (valid invite token) OR a reconnect from a device we've already paired.
     if !token_ok && !already_paired {
         warn!(%peer, phone = %stable_id, "no valid invite token and not a known device; dropping");
+        return Ok(());
+    }
+
+    if !crate::reconnect::session_interface_allowed(tls_local_ip,&daemon.ips()) {
+        info!("control: prefer the advertised LAN interface over Bluetooth PAN");
+        daemon.clear_phone_close();
+        daemon.spawn_auto_reconnect("LAN preferred over Bluetooth PAN");
         return Ok(());
     }
 

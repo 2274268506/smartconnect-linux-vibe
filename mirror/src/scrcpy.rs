@@ -213,7 +213,8 @@ fn select_device(
             };
         }
     }
-    let online: Vec<_> = list.iter().filter(|(_, state)| state == "device").collect();
+    // A lone TCP device on another interface must not override the paired LAN endpoint.
+    let online: Vec<_> = list.iter().filter(|(serial, state)| state == "device" && (peer.is_none() || serial.parse::<SocketAddr>().is_err())).collect();
     match online.as_slice() {
         [entry] => Ok(Some(entry.0.clone())),
         [] => Ok(None),
@@ -368,6 +369,8 @@ fn arguments(spec: &Spec, serial: &str, supports_hwdec: bool, uhid_mouse: bool, 
                 .collect::<String>()
         ),
     ];
+    args.push(format!("--video-codec={}", spec.options.video_codec.name()));
+    if !spec.options.video_encoder.is_empty() { args.push(format!("--video-encoder={}", spec.options.video_encoder)); }
     if spec.options.computer_ime {args.push("--prefer-text".into());}
     if spec.fullscreen {
         args.push("--fullscreen".into());
@@ -775,14 +778,16 @@ fn run(
     crate::diagnostics::record(
         "INFO",
         &format!(
-            "[{}] scrcpy: process started pid={} display={} bitrateKbps={:?} fps={:?} borderless={} softwareDecode={}",
+            "[{}] scrcpy: process started pid={} display={} bitrateKbps={:?} fps={:?} borderless={} softwareDecode={} videoCodec={} videoEncoder={}",
             spec.session_id,
             child.id(),
             spec.display_id,
             spec.quality.bitrate_kbps,
             spec.quality.fps,
             spec.borderless,
-            spec.options.software_decode
+            spec.options.software_decode,
+            spec.options.video_codec.name(),
+            if spec.options.video_encoder.is_empty() { "automatic" } else { &spec.options.video_encoder }
         ),
     );
     log_reader(master, serial.clone(), spec.session_id, state.clone());
@@ -974,6 +979,15 @@ case "$*" in *'dumpsys window policy') echo 'mIsShowing=true';; esac
     }
 
     #[test]
+    fn automatic_adb_does_not_reuse_a_lone_tcp_target_on_another_network() {
+        let pan=devices("10.0.0.1:5555\tdevice\n");let peer=Some("192.168.1.20".parse().unwrap());
+        assert_eq!(select_device(&pan,"",peer).unwrap(),None);
+        assert_eq!(select_device(&pan,"10.0.0.1:5555",peer).unwrap().as_deref(),Some("10.0.0.1:5555"));
+        assert_eq!(select_device(&pan,"",None).unwrap().as_deref(),Some("10.0.0.1:5555"));
+        let usb=devices("usb-fixture\tdevice\n");
+        assert_eq!(select_device(&usb,"",peer).unwrap().as_deref(),Some("usb-fixture"));
+    }
+    #[test]
     fn device_selection_handles_peer_priority_authorization_and_ambiguity() {
         let list = devices(
             "List of devices attached\nunit-one\tdevice\n192.168.1.20:5555\tdevice\nunit-locked\tunauthorized\n",
@@ -1035,6 +1049,22 @@ case "$*" in *'dumpsys window policy') echo 'mIsShowing=true';; esac
         let mut sdk_command=Command::new("unused-test-command");
         configure_input(&mut sdk_command,&options,false,false);
         assert!(sdk_command.get_envs().next().is_none());
+    }
+
+    #[test]
+    fn video_encoding_flags_are_scoped_to_each_stream() {
+        use crate::desktop_renderer::VideoCodec;
+        let mut s = spec();
+        assert!(arguments(&s,"unit-device",true,false,false).contains(&"--video-codec=h264".into()));
+        for codec in [VideoCodec::H265, VideoCodec::Av1] {
+            s.options.video_codec = codec;
+            s.options.video_encoder = "c2.vendor.encoder".into();
+            let args = arguments(&s,"unit-device",true,false,false);
+            assert!(args.contains(&format!("--video-codec={}",codec.name())));
+            assert!(args.contains(&"--video-encoder=c2.vendor.encoder".into()));
+        }
+        s.options = Default::default();
+        assert!(!arguments(&s,"unit-device",true,false,false).iter().any(|a|a.starts_with("--video-encoder=")));
     }
 
     #[test]

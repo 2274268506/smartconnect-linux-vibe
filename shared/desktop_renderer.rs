@@ -19,6 +19,19 @@ impl Renderer {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    #[default]
+    H264,
+    H265,
+    Av1,
+}
+impl VideoCodec {
+    pub fn name(self) -> &'static str {
+        match self { Self::H264 => "h264", Self::H265 => "h265", Self::Av1 => "av1" }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ScrcpyOptions {
@@ -26,6 +39,9 @@ pub struct ScrcpyOptions {
     pub adb_device: String,
     pub adb_port: u16,
     pub software_decode: bool,
+    pub video_codec: VideoCodec,
+    /// Empty selects the phone default encoder for the chosen codec.
+    pub video_encoder: String,
     /// Forward phone output to the PC (not microphone capture).
     pub audio: bool,
     /// Capture app playback instead of volume-dependent device output (Android 13+).
@@ -47,6 +63,8 @@ impl Default for ScrcpyOptions {
             adb_device: String::new(),
             adb_port: 5555,
             software_decode: false,
+            video_codec: VideoCodec::default(),
+            video_encoder: String::new(),
             audio: true,
             independent_audio: false,
             wake_unlock: false,
@@ -59,7 +77,9 @@ impl Default for ScrcpyOptions {
 }
 impl ScrcpyOptions {
     pub fn valid(&self) -> bool {
-        (25..=400).contains(&self.mouse_speed_percent)
+        self.video_encoder.len() <= 255
+            && self.video_encoder.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            && (25..=400).contains(&self.mouse_speed_percent)
             && self.adb_port > 0
             && self.adb_device.len() <= 255
             && self
@@ -83,6 +103,26 @@ impl ScrcpyOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn video_encoding_migrates_and_rejects_unknown_or_unsafe_values() {
+        let old = ScrcpyOptions::from_request(&serde_json::json!({})).unwrap();
+        assert_eq!(old.video_codec, VideoCodec::H264);
+        assert!(old.video_encoder.is_empty());
+        for codec in ["h264", "h265", "av1"] {
+            let options = ScrcpyOptions::from_request(&serde_json::json!({"scrcpy":{
+                "videoCodec":codec,"videoEncoder":"c2.vendor.encoder.avc"}})).unwrap();
+            assert_eq!(options.video_codec.name(), codec);
+            assert_eq!(serde_json::to_value(options).unwrap()["videoEncoder"], "c2.vendor.encoder.avc");
+        }
+        for value in [serde_json::json!("unknown"), serde_json::json!(null), serde_json::json!(1)] {
+            assert!(ScrcpyOptions::from_request(&serde_json::json!({"scrcpy":{"videoCodec":value}})).is_err());
+        }
+        for encoder in ["bad name", "bad\nname", "bad;name"] {
+            assert!(ScrcpyOptions::from_request(&serde_json::json!({"scrcpy":{"videoEncoder":encoder}})).is_err());
+        }
+        assert!(!ScrcpyOptions { video_encoder:"x".repeat(256), ..Default::default() }.valid());
+    }
+
     #[test]
     fn input_settings_migrate_and_reject_invalid_speed() {
         let old=ScrcpyOptions::from_request(&serde_json::json!({"scrcpy":{"foldMouse":false}})).unwrap();

@@ -137,3 +137,13 @@ published. The public protocol reference is [`docs/protocol/`](../docs/protocol/
 - [sms-unread-refresh.md](sms-unread-refresh.md) — event-triggered unread metadata refresh and SMS/MMS scope alignment; no polling timer.
 
 - [release-0.4.0.md](release-0.4.0.md) — gallery/SMS release, restart removal, obsolete-file cleanup and artifact validation.
+
+- [bluetooth-pan-coexistence.md](bluetooth-pan-coexistence.md) — BLE cleanup ownership/shared-profile guards and persistent PAN configuration without adapter resets.
+
+- [wifi-over-pan-addresses.md](wifi-over-pan-addresses.md) — interface-aware invitations, endpoint cache filtering, control-route preference and ADB target consistency without dropping PAN.
+
+- [app-native-fit-fullscreen.md](app-native-fit-fullscreen.md) — true fullscreen for app fits matching the launch monitor, preserving native pixels and avoiding KDE work-area shrinkage.
+
+- [scrcpy-video-encoding.md](scrcpy-video-encoding.md) — per-mode codec/encoder selection, validation, translated controls and scrcpy arguments.
+
+- [release-0.5.0.md](release-0.5.0.md) — video encoding, native fullscreen and LAN/PAN coexistence release validation and publication.

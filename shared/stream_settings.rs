@@ -81,6 +81,10 @@ impl Layout {
     pub fn height_for_width(self, w: u32) -> Option<u32> {
         even_ratio(w, self.ratio_height, self.ratio_width)
     }
+    /// A matching native fit needs real fullscreen so panels/work-area limits cannot shrink it.
+    pub fn fills_monitor(self, screen: (u32, u32)) -> bool {
+        self.fitted(screen).is_some_and(|size| size == screen)
+    }
     pub fn fitted(self, screen: (u32, u32)) -> Option<(u32, u32)> {
         if !self.valid() || !self.fixed {
             return None;
@@ -136,6 +140,15 @@ mod tests {
             .fitted((2880, 1920))
             .is_none()
         );
+    }
+    #[test]
+    fn matching_native_fit_is_fullscreen_but_manual_and_other_ratios_are_not() {
+        let layout = Layout { fixed: true, ratio_width: 3, ratio_height: 2, fit: FitAxis::Width };
+        assert!(layout.fills_monitor((2880, 1920)));
+        assert!(Layout { fit: FitAxis::Height, ..layout }.fills_monitor((2880, 1920)));
+        assert!(!layout.fills_monitor((1920, 1080)));
+        assert!(!Layout { fit: FitAxis::Manual, ..layout }.fills_monitor((2880, 1920)));
+        assert!(!Layout { fixed: false, ..layout }.fills_monitor((2880, 1920)));
     }
     #[test]
     fn rejects_bad_limits_and_preserves_independent_automatic_options() {

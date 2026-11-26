@@ -12,6 +12,7 @@ struct Form {
     adb_device: adw::EntryRow,
     adb_port: adw::SpinRow,
     software_decode: adw::SwitchRow,
+    encoding: crate::stream_controls::EncodingRows,
     audio: adw::SwitchRow,
     independent_audio: adw::SwitchRow,
     wake_unlock: adw::SwitchRow,
@@ -58,6 +59,8 @@ impl Form {
                 adb_device: self.adb_device.text().trim().into(),
                 adb_port: self.adb_port.value() as u16,
                 software_decode: self.software_decode.is_active(),
+                video_codec: self.encoding.selection().0,
+                video_encoder: self.encoding.selection().1,
                 audio: self.audio.is_active(),
                 independent_audio: self.independent_audio.is_active(),
                 wake_unlock: self.wake_unlock.is_active(),
@@ -128,6 +131,7 @@ impl Form {
         self.adb_device.set_visible(external || self.wake_unlock.is_active());
         self.adb_port.set_visible(external || self.wake_unlock.is_active());
         self.software_decode.set_visible(external);
+        self.encoding.refresh(external, true);
         self.audio.set_visible(external);
         self.independent_audio.set_visible(external);self.independent_audio.set_sensitive(self.audio.is_active());
         self.fold_mouse.set_visible(external);
@@ -212,6 +216,7 @@ fn build() -> (adw::PreferencesDialog, Rc<Form>) {
         u32::from(settings.scrcpy.adb_port),
         1.,
     );
+    let encoding = crate::stream_controls::EncodingRows::new(&settings.scrcpy);
     let software_decode = adw::SwitchRow::builder()
         .title(tr("Software decoding for scrcpy"))
         .active(settings.scrcpy.software_decode)
@@ -242,6 +247,7 @@ fn build() -> (adw::PreferencesDialog, Rc<Form>) {
     method.add(&adb_device);
     method.add(&adb_port);
     method.add(&software_decode);
+    encoding.add_to(&method);
     method.add(&audio);
     method.add(&independent_audio);
     method.add(&wake_unlock);
@@ -391,6 +397,7 @@ fn build() -> (adw::PreferencesDialog, Rc<Form>) {
         adb_device,
         adb_port,
         software_decode,
+        encoding,
         audio,
         independent_audio,
         wake_unlock,
@@ -413,6 +420,8 @@ fn build() -> (adw::PreferencesDialog, Rc<Form>) {
         error,
         syncing: Cell::new(false),
     });
+    let weak = Rc::downgrade(&form);
+    form.encoding.connect_changed(move || { if let Some(f) = weak.upgrade() { f.refresh(); } });
     let weak = Rc::downgrade(&form);
     form.renderer.connect_selected_notify(move |_| {
         if let Some(f) = weak.upgrade() {
@@ -649,6 +658,8 @@ mod tests {
             fps: Some(24),
         });
         form.renderer.set_selected(1);
+        form.encoding.set_selection(1, "c2.vendor.hevc.encoder");
+        assert_eq!(form.selection().scrcpy.video_codec, crate::desktop_renderer::VideoCodec::H265);
         assert!(form.adb_device.is_visible());
         form.adb_device.set_text("invalid device");
         assert!(!form.save.is_sensitive());
@@ -666,6 +677,8 @@ mod tests {
         form.save.emit_clicked();
         let saved = prefs::load();
         assert!(saved.apps.streaming.scrcpy.wake_unlock);
+        assert_eq!(saved.apps.streaming.scrcpy.video_codec, crate::desktop_renderer::VideoCodec::H265);
+        assert_eq!(saved.apps.streaming.scrcpy.video_encoder, "c2.vendor.hevc.encoder");
         assert_eq!(saved.apps.streaming.scrcpy.mouse_speed_percent,175);
         assert!(!saved.apps.streaming.scrcpy.phone_ime);
         assert!(saved.apps.streaming.scrcpy.computer_ime);

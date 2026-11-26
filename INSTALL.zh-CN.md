@@ -2,7 +2,7 @@
 
 **本项目修改自 [rudrahnpatel/smartconnect-linux](https://github.com/rudrahnpatel/smartconnect-linux)，保留原项目 MIT 许可证与版权声明。**
 
-版本：**v0.4.0**。发布页：[smartconnect-linux-vibe Releases](https://github.com/2274268506/smartconnect-linux-vibe/releases)。
+版本：**v0.5.0**。发布页：[smartconnect-linux-vibe Releases](https://github.com/2274268506/smartconnect-linux-vibe/releases)。
 
 ## Arch Linux / EndeavourOS 安装包
 
@@ -13,8 +13,8 @@
 ```sh
 mkdir -p smartconnect-vibe-install
 cd smartconnect-vibe-install
-curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.4.0/smartconnect-linux-vibe-0.4.0-1-x86_64.pkg.tar.zst
-curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.4.0/SHA256SUMS
+curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.5.0/smartconnect-linux-vibe-0.5.0-1-x86_64.pkg.tar.zst
+curl -fLO https://github.com/2274268506/smartconnect-linux-vibe/releases/download/v0.5.0/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
@@ -22,7 +22,7 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 ```sh
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.5.0-1-x86_64.pkg.tar.zst
 # 可选功能：scrcpy 投屏、ADB、剪贴板同步
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
@@ -40,7 +40,7 @@ GUI 和 `systemctl --user` 都以普通桌面用户运行，**不要加 sudo**�
 2. 电脑左上角设备菜单选择 **配对新手机…**；手机选择 **+ → 扫描二维码**。
 3. 按手机提示允许连接，并按需开启通知、短信等权限。
 4. 使用 scrcpy 时，还需在手机开发者选项中启用并授权 USB/网络 ADB。网络 ADB 连接端口不一定是 5555，且不等于无线配对端口。
-5. 应用页的投屏设置或桌面模式中选择 **scrcpy (ADB)**，设置分辨率、码率和帧率后开始。
+5. 应用页的投屏设置或桌面模式中选择 **scrcpy (ADB)**，设置分辨率、码率、帧率和视频编码（H.264/H.265/AV1）后开始。编码器名称可留空自动选择；非默认编码需要手机及电脑支持。
 
 手机密码锁仍需本人解锁。完整折叠鼠标兼容需要 Android 15+/scrcpy 4+；电脑输入法需要 scrcpy 5+。**独立于手机音量**需要 Android 13+，在当前设备已验证手机媒体音量为 0 时电脑仍有声音，但部分应用可能禁止音频采集。应用设置需保存并重开投屏后生效。
 
@@ -75,12 +75,12 @@ sudo pacman -S --needed git base-devel rust pkgconf avahi bluez wl-clipboard \
 ```sh
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.4.0
+git checkout v0.5.0
 ./packaging/install.sh --enable
 smartconnect-gui
 ```
 
-也可从 Release 下载 `smartconnect-linux-vibe-0.4.0-source.tar.gz`，解压后运行同一安装脚本。源码方式默认安装到 `~/.local`，无需使用 sudo 运行安装脚本。
+也可从 Release 下载 `smartconnect-linux-vibe-0.5.0-source.tar.gz`，解压后运行同一安装脚本。源码方式默认安装到 `~/.local`，无需使用 sudo 运行安装脚本。
 
 ## 本版功能入口
 

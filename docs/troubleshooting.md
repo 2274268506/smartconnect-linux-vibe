@@ -732,3 +732,23 @@ Then use **Messages → Mark all as read**, or open a conversation. This does no
 ## ADB file transfer after changing Wi-Fi
 
 Connect the paired phone to Smart Connect, then open **Files → ADB file transfer** or press **Refresh devices**. The tool reads the live paired peer address and attempts authorized ADB at that IP, using port 5555 by default or the port in an explicit IP/port entry. An already-open page reacts to peer-address changes; an active job finishes before rediscovery. Discovery never retries uploads/downloads. Network debugging must remain enabled and authorized; TLS wireless-debugging ports may require a manual address or external `adb pair`. There is no subnet scan. USB/manual device choices remain available.
+
+## Bluetooth PAN drops or fails at boot
+
+Pairing/ACL reachability and a ready NAP service are separate conditions. If NetworkManager reports NAP connect failure before phone-side Bluetooth tethering is ready, enable tethering on the phone and let the selected PAN profile retry. `connection.autoconnect-retries=0` enables continuous attempts; `ipv4.never-default=yes` and `ipv6.never-default=yes` keep PAN from replacing the main network route. See [persistent PAN setup](usage.md#persistent-bluetooth-pan-alongside-smart-connect).
+
+Earlier BLE-wake cleanup called BlueZ Device1.Disconnect, which disconnects all profiles on that device. This could interfere with PAN on a shared dual-mode device; it does not prove that any particular boot failure was caused by Smart Connect. Cleanup now refuses global disconnect for an initially connected device, Classic/PAN-capable device or uncertain metadata. Do not test the fix by deliberately dropping a working PAN link. Inspect the NM Bluetooth connection and BlueZ Network1.Connected instead. `bluetoothctl connect` errors are not automatically harmless: evaluate which profile failed and whether PAN remains active.
+
+## Phone and ADB addresses point to Bluetooth tethering
+
+Older automatic discovery sorted private IP addresses numerically, included PAN interfaces, and remembered the last mDNS/session source. This could advertise PAN ahead of Wi-Fi and poison the saved phone endpoint. Interface names are insufficient: Linux can rename a Bluetooth `bnep` interface to an `enp…` name. The policy now reads kernel DEVTYPE and subnet metadata, excludes PAN when ordinary LAN addresses exist, and blocks automatic PAN endpoint replacement. It never assumes that all 10/8 addresses are Bluetooth. Explicit `--ip` still overrides the normal choice.
+
+Keep the PAN network up, ensure the phone and computer share Wi-Fi, and reload the updated daemon when no projections are active. The app control socket then reconnects using its advertised LAN addresses; this does not disconnect Bluetooth. Refresh ADB file tools afterwards. Saved custom ADB targets are explicit overrides; choose automatic or the intended Wi-Fi endpoint if a previous PAN address was manually pinned.
+
+### Native-fit app window stops short of the screen edges
+
+Save a fixed ratio and a height/width fit, then close and reopen the app. When both computed dimensions match the monitor, the viewer requests true fullscreen instead of letting KDE constrain a borderless window to the work area. For example, 3:2 width fit on a 2880×1920 screen requests 2880×1920 fullscreen. Different monitor/app ratios retain the selected native axis; fullscreen cannot preserve both native pixels and show all content across mismatched ratios.
+
+### scrcpy codec or encoder will not start
+
+Set **Video codec** to H.264 and clear **Video encoder**, then reopen the stream. For a custom choice, inspect `scrcpy -s <adb-device> --list-encoders` and select an encoder listed under the same codec; AV1/H.265 encoding or PC decoding may be unavailable. Inspect Mirroring logs for the child’s encoder/decoder error. Changing codec does not automatically translate a manually entered encoder name.

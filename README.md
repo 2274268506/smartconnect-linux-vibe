@@ -4,7 +4,7 @@
 
 这是一个以 vibe coding 方式持续改进的 Linux Smart Connect 分支：在上游功能基础上，增加 scrcpy 应用投屏与完整桌面模式、折叠手机输入兼容、自定义分辨率/码率/帧率、多语言、电脑/手机输入法，以及独立于手机媒体音量的电脑音频采集。
 
-**当前版本：v0.4.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
+**当前版本：v0.5.0** · [下载版本](https://github.com/2274268506/smartconnect-linux-vibe/releases/latest) · [中文安装说明](INSTALL.zh-CN.md) · [English installation guide](docs/installation.md)
 
 The project is modified from the upstream repository linked above. It preserves the original license, credits and executable names. The scrcpy backend is optional and requires authorized ADB; the original Smart Connect backend does not require ADB.
 
@@ -54,7 +54,7 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
 sudo pacman -Syu
-sudo pacman -U ./smartconnect-linux-vibe-0.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./smartconnect-linux-vibe-0.5.0-1-x86_64.pkg.tar.zst
 sudo pacman -S --needed scrcpy android-tools wl-clipboard
 sudo systemctl enable --now avahi-daemon bluetooth
 systemctl --user enable --now smartconnectd
@@ -74,7 +74,7 @@ sudo systemctl enable --now avahi-daemon bluetooth
 
 git clone https://github.com/2274268506/smartconnect-linux-vibe.git
 cd smartconnect-linux-vibe
-git checkout v0.4.0
+git checkout v0.5.0
 ./packaging/install.sh --enable           # build, install to ~/.local, start the user service
 
 # firewalld example; see docs/installation.md for ufw
@@ -120,7 +120,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 |---|---|---|
 | Pairing by QR code | ✅ | Scan a QR from the Smart Connect app; the PC then appears in the phone's device list. |
 | Connection by USB cable | ✅ | The phone's cable mode (pick Smart Connect in the phone's USB popup): it finds the PC over USB tethering and connects over the cable. Verified on a motorola edge 70 max. The PC's cable address changes per plug-in unless fixed, see [usage](docs/usage.md#by-cable). |
-| Reconnect over Wi-Fi and Bluetooth LE | ✅ | The phone's Connect button, the daemon dialing the phone back over Wi-Fi (mDNS), and a Bluetooth LE wake that reaches the phone while Smart Connect is in the background. |
+| Reconnect over Wi-Fi and Bluetooth LE | ✅ | The phone's Connect button, the daemon dialing the phone back over Wi-Fi (mDNS), and a Bluetooth LE wake that reaches the phone while Smart Connect is in the background. Automatic data connections prefer Wi-Fi/LAN over PAN; cleanup preserves pre-existing and Classic/PAN-capable links. Persistent PAN is managed separately by NetworkManager. |
 | Automatic reconnect | ✅ | After drops, at startup and after a failed Connect, with Smart Connect in the background on the phone (Bluetooth LE wake, about 5 to 6 s). Early retries (phone back on Wi-Fi, resume, network change, Bluetooth switched on) and dropping a dead session after 70 s of silence are unit-tested, not yet seen on a device. A Disconnect from either side is respected. |
 | Feature tiles for this PC on the phone | ✅ | App streaming, Cross Control, PC lock, Hotspot and Webcam. |
 | PC lock tile | 🟡 | Locks through Noctalia's lock screen when it runs, else logind (GNOME under GDM, KDE, swayidle/hypridle lockers), or `--lock-command`. Tells the phone "locked" only once the lock is seen; GNOME started from SDDM or LightDM has no lock screen, and the PC then shows why. Not yet re-tested on a device. |
@@ -146,8 +146,8 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 |---|---|---|
 | Phone screen mirroring with mouse input | ✅ | |
 | Keyboard, phone keys and scrolling in the mirror window | 🟡 | Esc = Back, Ctrl+Alt+H = Home, Ctrl+Alt+R = Recents. |
-| App streaming started from the PC | ✅ | Each phone app in its own Linux window (`smartconnect-mirror --app`). |
-| App streaming from the phone's tile and the GTK app's *Apps* page | 🟡 | |
+| App streaming started from the PC | ✅ | Each phone app in its own Linux window (`smartconnect-mirror --app`). Matching native-fit app/monitor sizes open in true fullscreen. |
+| App streaming from the phone's tile and the GTK app's *Apps* page | 🟡 | Matching native-fit app/monitor sizes open in true fullscreen. |
 | Real app icons for the *Apps* page | ✅ | Downloaded from the phone on every connection into `~/.cache/smartconnect-linux/app-icons/`. `smartconnect-fex fetch-app-icons` does it by hand. |
 | Rotation of app and virtual-phone windows | 🟡 | The window turns with the app when it goes landscape, picture and input included. Verified on one phone (`SMARTCONNECT_MIRROR_ROTATION=off\|invert`). |
 | App window resize | 🟡 | Opt-in (`SMARTCONNECT_MIRROR_RESIZE=1`): the phone resizes the app's virtual display to the window. |
@@ -217,7 +217,7 @@ App startup shows **Cancel** next to **Opening…** in the notification bar; it 
 
 While a phone display or ADB connection is being prepared, use **Cancel** to release the pending start. scrcpy captures also recover their virtual display power on supported folded phones without turning on the physical inner screen.
 
-App streaming also supports **Apps → Streaming settings → Display method → scrcpy (ADB)**, with independent ADB settings and the existing resolution, DPI, bitrate/FPS and fixed-aspect controls. See [usage](docs/usage.md#app-streaming-with-scrcpy).
+App streaming also supports **Apps → Streaming settings → Display method → scrcpy (ADB)**, with independent ADB settings, H.264/H.265/AV1 codec and optional phone encoder selection, and the existing resolution, DPI, bitrate/FPS and fixed-aspect controls. See [usage](docs/usage.md#app-streaming-with-scrcpy).
 
 | Feature | Status | Notes |
 |---|---|---|

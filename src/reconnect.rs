@@ -145,21 +145,62 @@ async fn wait(daemon: &Daemon, delay: Duration, presence: &mut Presence) -> Wake
     }
 }
 
-/// Private IPv4 addresses on physical-looking interfaces. Container bridges and VPN tunnels are
-/// skipped because the phone would try (and time out on) every listed IP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LinkKind { Wifi, Ethernet, Usb, Bluetooth }
+fn bluetooth_uevent(text: &str) -> bool {text.lines().any(|line|line == "DEVTYPE=bluetooth")}
+/// Predictable names can rename bnep0 to an enp... name; inspect kernel type, not its spelling.
+pub fn is_bluetooth_interface(name: &str) -> bool {
+    if name.is_empty() || name.contains(['/', '\0']) {return false;}
+    std::fs::read_to_string(format!("/sys/class/net/{name}/uevent")).ok()
+        .is_some_and(|text|bluetooth_uevent(&text))
+}
+fn link_kind(name: &str) -> LinkKind {
+    if is_bluetooth_interface(name) {LinkKind::Bluetooth}
+    else if std::path::Path::new(&format!("/sys/class/net/{name}/wireless")).exists() {LinkKind::Wifi}
+    else if is_usb_tether(name) {LinkKind::Usb}
+    else {LinkKind::Ethernet}
+}
+fn choose_lan_addresses(mut candidates: Vec<(IpAddr, LinkKind)>) -> Vec<IpAddr> {
+    let has_lan=candidates.iter().any(|(_,kind)|*kind!=LinkKind::Bluetooth);
+    candidates.retain(|(_,kind)| !has_lan || *kind!=LinkKind::Bluetooth);
+    candidates.sort_by_key(|(ip,kind)|(*kind,*ip));
+    let mut result=Vec::new();for (ip,_) in candidates {if !result.contains(&ip){result.push(ip);}}result
+}
+/// Private LAN addresses in transport preference order. PAN is a fallback only without LAN.
 pub fn detect_lan_ips() -> Result<Vec<IpAddr>> {
     const SKIP: &[&str] = &["lo", "docker", "br-", "veth", "virbr", "tun", "tap", "wg", "tailscale"];
-    let mut ips: Vec<IpAddr> = if_addrs::get_if_addrs()?
-        .into_iter()
-        .filter(|i| !SKIP.iter().any(|p| i.name.starts_with(p)))
-        .filter_map(|i| match i.ip() {
-            IpAddr::V4(v4) if v4.is_private() => Some(IpAddr::V4(v4)),
-            _ => None,
-        })
-        .collect();
-    ips.sort();
-    ips.dedup();
-    Ok(ips)
+    let candidates=if_addrs::get_if_addrs()?.into_iter()
+        .filter(|iface|!SKIP.iter().any(|prefix|iface.name.starts_with(prefix)))
+        .filter_map(|iface|match iface.ip(){IpAddr::V4(ip) if ip.is_private()=>Some((IpAddr::V4(ip),link_kind(&iface.name))),_=>None}).collect();
+    Ok(choose_lan_addresses(candidates))
+}
+/// Infer direct-link transport from actual interface subnets, never from a private-IP prefix.
+pub fn is_on_bluetooth(ip: IpAddr) -> bool {
+    let mut best:Option<(u32,bool)>=None;
+    for iface in if_addrs::get_if_addrs().unwrap_or_default() {
+        let prefix=match (&iface.addr,ip.to_canonical()) {
+            (if_addrs::IfAddr::V4(a),IpAddr::V4(ip))=>{
+                let mask=u32::from(a.netmask);if u32::from(a.ip)&mask != u32::from(ip)&mask{continue;}mask.count_ones()
+            },
+            (if_addrs::IfAddr::V6(a),IpAddr::V6(ip))=>{
+                let mask=u128::from(a.netmask);if u128::from(a.ip)&mask != u128::from(ip)&mask{continue;}mask.count_ones()
+            },_=>continue,
+        };
+        let bluetooth=is_bluetooth_interface(&iface.name);
+        if best.is_none_or(|(old,old_bt)|prefix>old || prefix==old && old_bt && !bluetooth){best=Some((prefix,bluetooth));}
+    }
+    best.is_some_and(|(_,bluetooth)|bluetooth)
+}
+fn pan_allowed_by_policy(on_pan: bool, pan_is_advertised: bool, has_addresses: bool) -> bool {
+    !on_pan || pan_is_advertised || !has_addresses
+}
+/// Default LAN policy excludes PAN; an explicit --ip PAN address or PAN-only fallback permits it.
+pub fn pan_peer_allowed(ip: IpAddr, advertised: &[IpAddr]) -> bool {
+    pan_allowed_by_policy(is_on_bluetooth(ip),advertised.iter().any(|local|is_on_bluetooth(*local)),!advertised.is_empty())
+}
+/// Existing transport metadata stays truthful; only new control sessions enforce advertised policy.
+pub fn session_interface_allowed(local: Option<IpAddr>, advertised: &[IpAddr]) -> bool {
+    local.is_none_or(|ip|pan_allowed_by_policy(is_on_bluetooth(ip),advertised.contains(&ip),!advertised.is_empty()))
 }
 
 /// Kernel drivers of a phone's USB tethering link (the PC end of a cable connection).
@@ -261,6 +302,23 @@ pub async fn watch_system(daemon: Arc<Daemon>, refresh_ips: bool) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn lan_selection_uses_interface_type_and_preserves_pan_only_fallback() {
+        let wifi="192.168.1.30".parse().unwrap();let pan="10.0.0.2".parse().unwrap();let usb="192.168.42.2".parse().unwrap();
+        assert_eq!(choose_lan_addresses(vec![(pan,LinkKind::Bluetooth),(usb,LinkKind::Usb),(wifi,LinkKind::Wifi)]),vec![wifi,usb]);
+        assert_eq!(choose_lan_addresses(vec![(pan,LinkKind::Bluetooth)]),vec![pan]);
+        // A real Wi-Fi LAN can use 10/8; never classify the subnet by address spelling.
+        assert_eq!(choose_lan_addresses(vec![(pan,LinkKind::Wifi),(wifi,LinkKind::Bluetooth)]),vec![pan]);
+        assert!(bluetooth_uevent("DEVTYPE=bluetooth\nINTERFACE=enp9s0u3\n"));
+        assert!(!bluetooth_uevent("DEVTYPE=wlan\n"));
+    }
+    #[test]
+    fn pan_sessions_follow_selected_addresses_without_disconnecting_bluetooth() {
+        assert!(!pan_allowed_by_policy(true,false,true));
+        assert!(pan_allowed_by_policy(true,true,true));
+        assert!(pan_allowed_by_policy(true,false,false));
+        assert!(pan_allowed_by_policy(false,false,true));
+    }
     #[test]
     fn backoff_grows_then_settles_at_five_minutes() {
         let s: Vec<u64> = (0..8).map(|a| backoff(a, false).as_secs()).collect();

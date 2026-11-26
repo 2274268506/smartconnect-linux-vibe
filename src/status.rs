@@ -73,6 +73,11 @@ impl StatusHub {
         serde_json::to_string(&*self.state.lock().unwrap()).unwrap_or_default()
     }
 
+    pub fn session_local_ip(&self) -> Option<std::net::IpAddr> {
+        let state=self.state.lock().unwrap();
+        state.connected.then(||state.pc_address.as_deref()?.parse().ok()).flatten()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.changes.subscribe()
     }
@@ -186,6 +191,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn route_policy_reads_only_an_active_sessions_actual_local_address() {
+        let hub=StatusHub::new(true,None);
+        hub.update(|s|s.pc_address=Some("192.168.1.30".into()));
+        assert!(hub.session_local_ip().is_none());
+        hub.update(|s|s.connected=true);
+        assert_eq!(hub.session_local_ip(),Some("192.168.1.30".parse().unwrap()));
+        hub.update(|s|s.pc_address=Some("invalid".into()));assert!(hub.session_local_ip().is_none());
+    }
     #[test]
     fn read_on_phone_publishes_zero_and_keeps_app_notifications() {
         let hub = StatusHub::new(true, None);
